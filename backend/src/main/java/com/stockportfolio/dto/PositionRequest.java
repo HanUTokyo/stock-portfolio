@@ -1,0 +1,13 @@
+package com.stockportfolio.dto;
+
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.math.BigDecimal;
+
+public record PositionRequest(
+        @NotBlank String symbol,
+        @NotNull @DecimalMin(value = "0.0001", inclusive = true) BigDecimal quantity,
+        @NotNull @DecimalMin(value = "0.0000", inclusive = true) BigDecimal averageCost
+) {
+}

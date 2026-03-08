@@ -1,0 +1,17 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:16
+    container_name: stock-portfolio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: stock_portfolio
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

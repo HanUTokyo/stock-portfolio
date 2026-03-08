@@ -1,0 +1,76 @@
+:root {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: #0b1324;
+  background: #f7f8fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #eef2ff 0%, #f7f8fc 40%, #ffffff 100%);
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #dfe5f2;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+input,
+select,
+button {
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #c6d0e4;
+}
+
+button {
+  border: none;
+  background: #0057d8;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid #ebeff8;
+}
+
+.error {
+  color: #b00020;
+  font-weight: 600;
+}

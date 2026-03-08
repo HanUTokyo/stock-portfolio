@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Java / backend
+backend/target/
+
+# IDE
+.idea/
+.vscode/

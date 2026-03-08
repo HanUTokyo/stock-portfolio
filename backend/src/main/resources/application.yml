@@ -1,0 +1,22 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:stock_portfolio}
+    username: ${DB_USERNAME:stock_user}
+    password: ${DB_PASSWORD:stock_password}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    org.hibernate.SQL: warn
