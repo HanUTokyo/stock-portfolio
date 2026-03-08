@@ -50,3 +50,7 @@ export function getHoldings() {
 export function getSummary() {
   return request('/portfolio/summary');
 }
+
+export function getAssetCurve() {
+  return request('/portfolio/asset-curve');
+}

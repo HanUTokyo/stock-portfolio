@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   addPosition,
+  getAssetCurve,
   getHoldings,
   getSummary,
   getTransactions,
@@ -10,29 +11,69 @@ import {
 const emptyPosition = { symbol: '', quantity: '', averageCost: '' };
 const emptyTransaction = { symbol: '', type: 'BUY', quantity: '', price: '' };
 
+function formatCurrency(value) {
+  return Number(value).toFixed(2);
+}
+
+function buildChartData(assetCurve) {
+  if (!assetCurve.length) {
+    return { path: '', points: [] };
+  }
+
+  const width = 640;
+  const height = 240;
+  const padding = 24;
+  const values = assetCurve.map((point) => Number(point.totalAssets));
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const valueSpan = Math.max(maxValue - minValue, 1);
+
+  const points = assetCurve.map((point, index) => {
+    const x = padding + (index * (width - padding * 2)) / Math.max(assetCurve.length - 1, 1);
+    const y = height - padding - ((Number(point.totalAssets) - minValue) / valueSpan) * (height - padding * 2);
+    return {
+      x,
+      y,
+      timestamp: point.timestamp,
+      totalAssets: point.totalAssets
+    };
+  });
+
+  const path = points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ');
+
+  return { path, points, width, height, minValue, maxValue };
+}
+
 export default function App() {
   const [holdings, setHoldings] = useState([]);
   const [summary, setSummary] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [assetCurve, setAssetCurve] = useState([]);
   const [positionForm, setPositionForm] = useState(emptyPosition);
   const [transactionForm, setTransactionForm] = useState(emptyTransaction);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const chartData = useMemo(() => buildChartData(assetCurve), [assetCurve]);
 
   async function loadDashboard() {
     setLoading(true);
     setError('');
 
     try {
-      const [holdingsData, summaryData, transactionsData] = await Promise.all([
+      const [holdingsData, summaryData, transactionsData, assetCurveData] = await Promise.all([
         getHoldings(),
         getSummary(),
-        getTransactions()
+        getTransactions(),
+        getAssetCurve()
       ]);
 
       setHoldings(holdingsData);
       setSummary(summaryData);
       setTransactions(transactionsData);
+      setAssetCurve(assetCurveData);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -168,6 +209,24 @@ export default function App() {
             <button type="submit">Record Transaction</button>
           </form>
         </article>
+      </section>
+
+      <section className="card">
+        <h2>总资产曲线</h2>
+        {chartData.path ? (
+          <div className="chart-wrap">
+            <svg viewBox={`0 0 ${chartData.width} ${chartData.height}`} className="asset-chart" role="img" aria-label="总资产曲线图">
+              <line x1="24" y1="216" x2="616" y2="216" className="chart-axis" />
+              <line x1="24" y1="24" x2="24" y2="216" className="chart-axis" />
+              <path d={chartData.path} className="chart-line" />
+            </svg>
+            <p className="chart-caption">
+              最低: ${formatCurrency(chartData.minValue)} / 最高: ${formatCurrency(chartData.maxValue)}
+            </p>
+          </div>
+        ) : (
+          <p>暂无交易数据，记录交易后将显示总资产曲线。</p>
+        )}
       </section>
 
       <section className="card">
