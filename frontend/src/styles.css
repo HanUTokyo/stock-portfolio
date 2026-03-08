@@ -74,3 +74,34 @@ td {
   color: #b00020;
   font-weight: 600;
 }
+
+.chart-wrap {
+  width: 100%;
+}
+
+.asset-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #f8fbff;
+  border-radius: 8px;
+  border: 1px solid #dbe5f5;
+}
+
+.chart-axis {
+  stroke: #a9b9d8;
+  stroke-width: 1;
+}
+
+.chart-line {
+  fill: none;
+  stroke: #0057d8;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-caption {
+  margin-top: 8px;
+  color: #37517a;
+}

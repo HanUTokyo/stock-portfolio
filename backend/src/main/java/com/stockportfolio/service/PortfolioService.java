@@ -100,6 +100,60 @@ public class PortfolioService {
         return new PortfolioSummaryResponse(positions.size(), totalCostBasis, totalUnits);
     }
 
+    @Transactional(readOnly = true)
+    public List<AssetCurvePointResponse> getAssetCurve() {
+        List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
+        java.util.Map<String, PositionSnapshot> snapshots = new java.util.HashMap<>();
+        java.util.List<AssetCurvePointResponse> points = new java.util.ArrayList<>();
+
+        BigDecimal totalAssets = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+
+        for (Transaction transaction : transactions) {
+            PositionSnapshot snapshot = snapshots.computeIfAbsent(transaction.getSymbol(), symbol -> new PositionSnapshot());
+            BigDecimal oldCostBasis = snapshot.costBasis();
+
+            if (transaction.getType() == TransactionType.BUY) {
+                BigDecimal newQuantity = snapshot.quantity.add(transaction.getQuantity());
+                BigDecimal weightedAverage = newQuantity.compareTo(BigDecimal.ZERO) == 0
+                        ? BigDecimal.ZERO
+                        : oldCostBasis.add(transaction.getQuantity().multiply(transaction.getPrice()))
+                        .divide(newQuantity, 4, RoundingMode.HALF_UP);
+
+                snapshot.quantity = newQuantity.setScale(4, RoundingMode.HALF_UP);
+                snapshot.averageCost = weightedAverage.setScale(4, RoundingMode.HALF_UP);
+            } else {
+                BigDecimal remainingQuantity = snapshot.quantity.subtract(transaction.getQuantity());
+                if (remainingQuantity.compareTo(BigDecimal.ZERO) < 0) {
+                    remainingQuantity = BigDecimal.ZERO;
+                }
+
+                snapshot.quantity = remainingQuantity.setScale(4, RoundingMode.HALF_UP);
+                if (remainingQuantity.compareTo(BigDecimal.ZERO) == 0) {
+                    snapshot.averageCost = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+                }
+            }
+
+            BigDecimal newCostBasis = snapshot.costBasis();
+            totalAssets = totalAssets.subtract(oldCostBasis).add(newCostBasis).setScale(4, RoundingMode.HALF_UP);
+
+            points.add(new AssetCurvePointResponse(transaction.getExecutedAt(), totalAssets));
+        }
+
+        return points;
+    }
+
+    private static class PositionSnapshot {
+        private BigDecimal quantity = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        private BigDecimal averageCost = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+
+        private PositionSnapshot() {
+        }
+
+        private BigDecimal costBasis() {
+            return quantity.multiply(averageCost).setScale(4, RoundingMode.HALF_UP);
+        }
+    }
+
     private void applyTransactionToPosition(Transaction transaction) {
         Position position = positionRepository.findBySymbolIgnoreCase(transaction.getSymbol())
                 .orElseGet(() -> {

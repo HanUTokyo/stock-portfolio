@@ -1,5 +1,6 @@
 package com.stockportfolio.controller;
 
+import com.stockportfolio.dto.AssetCurvePointResponse;
 import com.stockportfolio.dto.HoldingResponse;
 import com.stockportfolio.dto.PortfolioSummaryResponse;
 import com.stockportfolio.service.PortfolioService;
@@ -27,5 +28,10 @@ public class PortfolioController {
     @GetMapping("/summary")
     public PortfolioSummaryResponse summary() {
         return portfolioService.getSummary();
+    }
+
+    @GetMapping("/asset-curve")
+    public List<AssetCurvePointResponse> assetCurve() {
+        return portfolioService.getAssetCurve();
     }
 }
