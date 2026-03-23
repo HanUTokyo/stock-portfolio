@@ -1,0 +1,77 @@
+package com.stockportfolio.model;
+
+import jakarta.persistence.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+
+@Entity
+@Table(
+        name = "pe_history",
+        uniqueConstraints = @UniqueConstraint(columnNames = {"symbol", "trade_date"})
+)
+public class PeHistory {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, length = 20)
+    private String symbol;
+
+    @Column(name = "trade_date", nullable = false)
+    private LocalDate tradeDate;
+
+    @Column(name = "trailing_pe", nullable = false, precision = 19, scale = 4)
+    private BigDecimal trailingPe;
+
+    @Column(name = "captured_at", nullable = false)
+    private OffsetDateTime capturedAt;
+
+    @PrePersist
+    @PreUpdate
+    void touchCapturedAt() {
+        capturedAt = OffsetDateTime.now();
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getSymbol() {
+        return symbol;
+    }
+
+    public void setSymbol(String symbol) {
+        this.symbol = symbol;
+    }
+
+    public LocalDate getTradeDate() {
+        return tradeDate;
+    }
+
+    public void setTradeDate(LocalDate tradeDate) {
+        this.tradeDate = tradeDate;
+    }
+
+    public BigDecimal getTrailingPe() {
+        return trailingPe;
+    }
+
+    public void setTrailingPe(BigDecimal trailingPe) {
+        this.trailingPe = trailingPe;
+    }
+
+    public OffsetDateTime getCapturedAt() {
+        return capturedAt;
+    }
+
+    public void setCapturedAt(OffsetDateTime capturedAt) {
+        this.capturedAt = capturedAt;
+    }
+}

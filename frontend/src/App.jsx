@@ -1,79 +1,88 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import {
-  addPosition,
+  createDividend,
+  downloadCsvImportErrors,
+  deleteTransaction,
+  getDividends,
   getAssetCurve,
   getHoldings,
+  getMonthlyDividends,
+  getPeHistory,
+  getPriceHistory,
   getSummary,
   getTransactions,
-  recordTransaction
+  importDividendsCsv,
+  importTransactionsCsv,
+  recordTransaction,
+  refreshPrices,
+  syncMarketClose,
+  updateTransaction
 } from './api';
+import OverviewPage from './pages/OverviewPage';
+import MarketDataPage from './pages/MarketDataPage';
+import TransactionsPage from './pages/TransactionsPage';
+import DividendsPage from './pages/DividendsPage';
+import { formatDateInput } from './utils/charts';
 
-const emptyPosition = { symbol: '', quantity: '', averageCost: '' };
-const emptyTransaction = { symbol: '', type: 'BUY', quantity: '', price: '' };
-
-function formatCurrency(value) {
-  return Number(value).toFixed(2);
+function createEmptyTransaction() {
+  return {
+    symbol: '',
+    type: 'BUY',
+    quantity: '',
+    price: '',
+    tradeDate: formatDateInput(new Date())
+  };
 }
 
-function buildChartData(assetCurve) {
-  if (!assetCurve.length) {
-    return { path: '', points: [] };
-  }
-
-  const width = 640;
-  const height = 240;
-  const padding = 24;
-  const values = assetCurve.map((point) => Number(point.totalAssets));
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const valueSpan = Math.max(maxValue - minValue, 1);
-
-  const points = assetCurve.map((point, index) => {
-    const x = padding + (index * (width - padding * 2)) / Math.max(assetCurve.length - 1, 1);
-    const y = height - padding - ((Number(point.totalAssets) - minValue) / valueSpan) * (height - padding * 2);
-    return {
-      x,
-      y,
-      timestamp: point.timestamp,
-      totalAssets: point.totalAssets
-    };
-  });
-
-  const path = points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-    .join(' ');
-
-  return { path, points, width, height, minValue, maxValue };
-}
+const emptyDividend = { symbol: '', amount: '', paidDate: formatDateInput(new Date()) };
 
 export default function App() {
   const [holdings, setHoldings] = useState([]);
   const [summary, setSummary] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [dividends, setDividends] = useState([]);
+  const [monthlyDividends, setMonthlyDividends] = useState([]);
   const [assetCurve, setAssetCurve] = useState([]);
-  const [positionForm, setPositionForm] = useState(emptyPosition);
-  const [transactionForm, setTransactionForm] = useState(emptyTransaction);
+  const [priceHistory, setPriceHistory] = useState([]);
+  const [peHistory, setPeHistory] = useState([]);
+  const [historySymbol, setHistorySymbol] = useState('');
+  const [historyFrom, setHistoryFrom] = useState(formatDateInput(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)));
+  const [historyTo, setHistoryTo] = useState(formatDateInput(new Date()));
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [transactionForm, setTransactionForm] = useState(createEmptyTransaction());
+  const [dividendForm, setDividendForm] = useState(emptyDividend);
+  const [importFile, setImportFile] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [actionResult, setActionResult] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-
-  const chartData = useMemo(() => buildChartData(assetCurve), [assetCurve]);
 
   async function loadDashboard() {
     setLoading(true);
     setError('');
 
     try {
-      const [holdingsData, summaryData, transactionsData, assetCurveData] = await Promise.all([
+      const [holdingsData, summaryData, transactionsData, assetCurveData, dividendsData, monthlyDividendsData] = await Promise.all([
         getHoldings(),
         getSummary(),
         getTransactions(),
-        getAssetCurve()
+        getAssetCurve(),
+        getDividends(),
+        getMonthlyDividends()
       ]);
 
       setHoldings(holdingsData);
       setSummary(summaryData);
       setTransactions(transactionsData);
       setAssetCurve(assetCurveData);
+      setDividends(dividendsData);
+      setMonthlyDividends(monthlyDividendsData);
+
+      if (!historySymbol && holdingsData.length > 0) {
+        setHistorySymbol(holdingsData[0].symbol);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -81,26 +90,33 @@ export default function App() {
     }
   }
 
+  async function loadHistory() {
+    if (!historySymbol) {
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const [prices, pe] = await Promise.all([
+        getPriceHistory(historySymbol, historyFrom, historyTo),
+        getPeHistory(historySymbol, historyFrom, historyTo)
+      ]);
+      setPriceHistory(prices);
+      setPeHistory(pe);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   useEffect(() => {
     loadDashboard();
   }, []);
 
-  async function handleAddPosition(e) {
-    e.preventDefault();
-    setError('');
-
-    try {
-      await addPosition({
-        symbol: positionForm.symbol,
-        quantity: Number(positionForm.quantity),
-        averageCost: Number(positionForm.averageCost)
-      });
-      setPositionForm(emptyPosition);
-      await loadDashboard();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
+  useEffect(() => {
+    loadHistory();
+  }, [historySymbol, historyFrom, historyTo]);
 
   async function handleRecordTransaction(e) {
     e.preventDefault();
@@ -111,173 +127,243 @@ export default function App() {
         symbol: transactionForm.symbol,
         type: transactionForm.type,
         quantity: Number(transactionForm.quantity),
-        price: Number(transactionForm.price)
+        price: Number(transactionForm.price),
+        executedAt: new Date(`${transactionForm.tradeDate}T00:00:00`).toISOString()
       });
-      setTransactionForm(emptyTransaction);
+      setTransactionForm(createEmptyTransaction());
       await loadDashboard();
+      await loadHistory();
     } catch (err) {
       setError(err.message);
     }
   }
 
+  async function handleDeleteTransaction(transactionId) {
+    setError('');
+    setActionResult('');
+
+    try {
+      await deleteTransaction(transactionId);
+      setActionResult(`Transaction ${transactionId} deleted.`);
+      await loadDashboard();
+      await loadHistory();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleUpdateTransaction(transactionId, payload) {
+    setError('');
+    setActionResult('');
+
+    try {
+      await updateTransaction(transactionId, payload);
+      setActionResult(`Transaction ${transactionId} updated.`);
+      await loadDashboard();
+      await loadHistory();
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    }
+  }
+
+  async function handleAddDividend(e) {
+    e.preventDefault();
+    setError('');
+    setActionResult('');
+
+    try {
+      await createDividend({
+        symbol: dividendForm.symbol,
+        amount: Number(dividendForm.amount),
+        paidDate: dividendForm.paidDate
+      });
+      setDividendForm({ ...emptyDividend, paidDate: formatDateInput(new Date()) });
+      setActionResult('Dividend recorded.');
+      await loadDashboard();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleImportDividends(file) {
+    setError('');
+    setActionResult('');
+    try {
+      const result = await importDividendsCsv(file);
+      setActionResult(`Dividend CSV imported: imported=${result.importedRows}, failed=${result.failedRows}, skipped=${result.skippedRows}`);
+      await loadDashboard();
+      return result;
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    }
+  }
+
+  async function handleRefreshPrices() {
+    setActionResult('');
+    setError('');
+
+    try {
+      const result = await refreshPrices();
+      setActionResult(`Manual refresh done: ${result.updatedSymbols}/${result.scannedSymbols}`);
+      await loadDashboard();
+      await loadHistory();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleSyncClose() {
+    setActionResult('');
+    setError('');
+
+    try {
+      const result = await syncMarketClose();
+      setActionResult(`Close sync done: success=${result.successfulSymbols}, failed=${result.failedSymbols}, skipped=${result.skippedSymbols}`);
+      await loadDashboard();
+      await loadHistory();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleImportCsv(dryRun) {
+    if (!importFile) {
+      setError('Please choose a CSV file first.');
+      return;
+    }
+
+    setImportLoading(true);
+    setError('');
+    setActionResult('');
+
+    try {
+      const result = await importTransactionsCsv(importFile, dryRun);
+      setImportResult(result);
+      setActionResult(
+        dryRun
+          ? `Dry-run complete: imported=${result.importedRows}, failed=${result.failedRows}`
+          : `Import complete: imported=${result.importedRows}, failed=${result.failedRows}`
+      );
+
+      if (!dryRun) {
+        await loadDashboard();
+        await loadHistory();
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  async function handleDownloadErrors() {
+    if (!importFile) {
+      setError('Please choose a CSV file first.');
+      return;
+    }
+
+    try {
+      const blob = await downloadCsvImportErrors(importFile);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'failed-rows.csv';
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   return (
-    <main className="container">
-      <h1>Stock Portfolio Manager</h1>
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Stock Portfolio</p>
+          <h1 className="brand">Control Center</h1>
+        </div>
+        <div className="topbar-actions">
+          <nav className="tabs">
+            <NavLink to="/overview" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Overview</NavLink>
+            <NavLink to="/market" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Market Data</NavLink>
+            <NavLink to="/transactions" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Transactions</NavLink>
+            <NavLink to="/dividends" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Dividends</NavLink>
+          </nav>
+        </div>
+      </header>
 
       {error && <p className="error">{error}</p>}
-      {loading && <p>Loading...</p>}
+      {actionResult && <p className="info">{actionResult}</p>}
+      {loading && <p className="muted">Loading dashboard...</p>}
 
-      <section className="grid">
-        <article className="card">
-          <h2>Portfolio Summary</h2>
-          {summary ? (
-            <ul>
-              <li>Total Positions: {summary.totalPositions}</li>
-              <li>Total Units: {summary.totalUnits}</li>
-              <li>Total Cost Basis: ${summary.totalCostBasis}</li>
-            </ul>
-          ) : (
-            <p>No summary data yet.</p>
-          )}
-        </article>
-
-        <article className="card">
-          <h2>Add Stock Position</h2>
-          <form onSubmit={handleAddPosition}>
-            <input
-              placeholder="Symbol (e.g., AAPL)"
-              value={positionForm.symbol}
-              onChange={(e) => setPositionForm({ ...positionForm, symbol: e.target.value })}
-              required
+      <Routes>
+        <Route
+          path="/overview"
+          element={
+            <OverviewPage
+              summary={summary}
+              assetCurve={assetCurve}
+              holdings={holdings}
+              dividends={dividends}
             />
-            <input
-              type="number"
-              min="0.0001"
-              step="0.0001"
-              placeholder="Quantity"
-              value={positionForm.quantity}
-              onChange={(e) => setPositionForm({ ...positionForm, quantity: e.target.value })}
-              required
+          }
+        />
+        <Route
+          path="/market"
+          element={
+            <MarketDataPage
+              historySymbol={historySymbol}
+              setHistorySymbol={setHistorySymbol}
+              historyFrom={historyFrom}
+              setHistoryFrom={setHistoryFrom}
+              historyTo={historyTo}
+              setHistoryTo={setHistoryTo}
+              historyLoading={historyLoading}
+              priceHistory={priceHistory}
+              peHistory={peHistory}
+              onLoadHistory={loadHistory}
+              onRefreshPrices={handleRefreshPrices}
+              onSyncMarketClose={handleSyncClose}
             />
-            <input
-              type="number"
-              min="0"
-              step="0.0001"
-              placeholder="Average Cost"
-              value={positionForm.averageCost}
-              onChange={(e) => setPositionForm({ ...positionForm, averageCost: e.target.value })}
-              required
+          }
+        />
+        <Route
+          path="/transactions"
+          element={
+            <TransactionsPage
+              transactions={transactions}
+              onDeleteTransaction={handleDeleteTransaction}
+              onUpdateTransaction={handleUpdateTransaction}
+              transactionForm={transactionForm}
+              setTransactionForm={setTransactionForm}
+              onRecordTransaction={handleRecordTransaction}
+              importFile={importFile}
+              setImportFile={setImportFile}
+              importLoading={importLoading}
+              importResult={importResult}
+              onImportDryRun={() => handleImportCsv(true)}
+              onImportCsv={() => handleImportCsv(false)}
+              onDownloadImportErrors={handleDownloadErrors}
             />
-            <button type="submit">Add / Update Position</button>
-          </form>
-        </article>
-
-        <article className="card">
-          <h2>Record Transaction</h2>
-          <form onSubmit={handleRecordTransaction}>
-            <input
-              placeholder="Symbol"
-              value={transactionForm.symbol}
-              onChange={(e) => setTransactionForm({ ...transactionForm, symbol: e.target.value })}
-              required
+          }
+        />
+        <Route
+          path="/dividends"
+          element={
+            <DividendsPage
+              monthlyDividends={monthlyDividends}
+              dividends={dividends}
+              dividendForm={dividendForm}
+              setDividendForm={setDividendForm}
+              onAddDividend={handleAddDividend}
+              onImportDividends={handleImportDividends}
             />
-            <select
-              value={transactionForm.type}
-              onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value })}
-            >
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </select>
-            <input
-              type="number"
-              min="0.0001"
-              step="0.0001"
-              placeholder="Quantity"
-              value={transactionForm.quantity}
-              onChange={(e) => setTransactionForm({ ...transactionForm, quantity: e.target.value })}
-              required
-            />
-            <input
-              type="number"
-              min="0.0001"
-              step="0.0001"
-              placeholder="Price"
-              value={transactionForm.price}
-              onChange={(e) => setTransactionForm({ ...transactionForm, price: e.target.value })}
-              required
-            />
-            <button type="submit">Record Transaction</button>
-          </form>
-        </article>
-      </section>
-
-      <section className="card">
-        <h2>总资产曲线</h2>
-        {chartData.path ? (
-          <div className="chart-wrap">
-            <svg viewBox={`0 0 ${chartData.width} ${chartData.height}`} className="asset-chart" role="img" aria-label="总资产曲线图">
-              <line x1="24" y1="216" x2="616" y2="216" className="chart-axis" />
-              <line x1="24" y1="24" x2="24" y2="216" className="chart-axis" />
-              <path d={chartData.path} className="chart-line" />
-            </svg>
-            <p className="chart-caption">
-              最低: ${formatCurrency(chartData.minValue)} / 最高: ${formatCurrency(chartData.maxValue)}
-            </p>
-          </div>
-        ) : (
-          <p>暂无交易数据，记录交易后将显示总资产曲线。</p>
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Holdings</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Quantity</th>
-              <th>Average Cost</th>
-              <th>Cost Basis</th>
-            </tr>
-          </thead>
-          <tbody>
-            {holdings.map((holding) => (
-              <tr key={holding.symbol}>
-                <td>{holding.symbol}</td>
-                <td>{holding.quantity}</td>
-                <td>${holding.averageCost}</td>
-                <td>${holding.costBasis}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="card">
-        <h2>Transactions</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Symbol</th>
-              <th>Type</th>
-              <th>Quantity</th>
-              <th>Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            {transactions.map((txn) => (
-              <tr key={txn.id}>
-                <td>{new Date(txn.executedAt).toLocaleString()}</td>
-                <td>{txn.symbol}</td>
-                <td>{txn.type}</td>
-                <td>{txn.quantity}</td>
-                <td>${txn.price}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+          }
+        />
+        <Route path="*" element={<Navigate to="/overview" replace />} />
+      </Routes>
     </main>
   );
 }

@@ -20,3 +20,13 @@ server:
 logging:
   level:
     org.hibernate.SQL: warn
+
+app:
+  pricing:
+    timezone: ${PRICING_TIMEZONE:America/New_York}
+    open-cron: ${PRICING_OPEN_CRON:0 35 9 * * MON-FRI}
+    close-cron: ${PRICING_CLOSE_CRON:0 5 16 * * MON-FRI}
+    yahoo-base-url: ${YAHOO_FINANCE_BASE_URL:https://query1.finance.yahoo.com}
+    retry:
+      max-attempts: ${PRICING_RETRY_MAX_ATTEMPTS:3}
+      backoff-ms: ${PRICING_RETRY_BACKOFF_MS:1000}

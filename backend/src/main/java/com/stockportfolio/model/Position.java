@@ -21,6 +21,18 @@ public class Position {
     @Column(name = "average_cost", nullable = false, precision = 19, scale = 4)
     private BigDecimal averageCost;
 
+    @Column(name = "latest_price", precision = 19, scale = 4)
+    private BigDecimal latestPrice;
+
+    @Column(name = "latest_pe", precision = 19, scale = 4)
+    private BigDecimal latestPe;
+
+    @Column(name = "price_updated_at")
+    private OffsetDateTime priceUpdatedAt;
+
+    @Column(name = "pe_updated_at")
+    private OffsetDateTime peUpdatedAt;
+
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
 
@@ -60,6 +72,38 @@ public class Position {
 
     public void setAverageCost(BigDecimal averageCost) {
         this.averageCost = averageCost;
+    }
+
+    public BigDecimal getLatestPrice() {
+        return latestPrice;
+    }
+
+    public void setLatestPrice(BigDecimal latestPrice) {
+        this.latestPrice = latestPrice;
+    }
+
+    public OffsetDateTime getPriceUpdatedAt() {
+        return priceUpdatedAt;
+    }
+
+    public void setPriceUpdatedAt(OffsetDateTime priceUpdatedAt) {
+        this.priceUpdatedAt = priceUpdatedAt;
+    }
+
+    public BigDecimal getLatestPe() {
+        return latestPe;
+    }
+
+    public void setLatestPe(BigDecimal latestPe) {
+        this.latestPe = latestPe;
+    }
+
+    public OffsetDateTime getPeUpdatedAt() {
+        return peUpdatedAt;
+    }
+
+    public void setPeUpdatedAt(OffsetDateTime peUpdatedAt) {
+        this.peUpdatedAt = peUpdatedAt;
     }
 
     public OffsetDateTime getUpdatedAt() {

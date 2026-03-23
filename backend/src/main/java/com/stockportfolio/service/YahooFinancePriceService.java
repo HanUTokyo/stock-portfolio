@@ -1,0 +1,231 @@
+package com.stockportfolio.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+@Service
+public class YahooFinancePriceService {
+
+    private final String yahooBaseUrl;
+    private final ObjectMapper objectMapper;
+    private final HttpClient httpClient;
+
+    private volatile String crumb;
+
+    public YahooFinancePriceService(@Value("${app.pricing.yahoo-base-url:https://query1.finance.yahoo.com}") String yahooBaseUrl,
+                                    ObjectMapper objectMapper) {
+        this.yahooBaseUrl = yahooBaseUrl;
+        this.objectMapper = objectMapper;
+
+        CookieManager cookieManager = new CookieManager();
+        cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+
+        this.httpClient = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .cookieHandler(cookieManager)
+                .build();
+    }
+
+    public Optional<YahooMarketSnapshot> fetchSnapshot(String symbol) {
+        BigDecimal price = null;
+        OffsetDateTime marketTime = null;
+        BigDecimal trailingPe = null;
+
+        try {
+            JsonNode sparkMeta = fetchSparkMeta(symbol);
+            price = parseRegularMarketPrice(sparkMeta).orElse(null);
+            marketTime = parseRegularMarketTime(sparkMeta).orElse(null);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            trailingPe = fetchTrailingPe(symbol).orElse(null);
+        } catch (Exception ignored) {
+        }
+
+        if (price == null && trailingPe == null && marketTime == null) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new YahooMarketSnapshot(price, trailingPe, marketTime));
+    }
+
+    public List<YahooDailyPricePoint> fetchDailyCloseHistory(String symbol, LocalDate from, LocalDate to)
+            throws IOException, InterruptedException {
+        if (to.isBefore(from)) {
+            return List.of();
+        }
+
+        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        long period1 = from.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+        long period2 = to.plusDays(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+        String url = yahooBaseUrl + "/v8/finance/chart/" + encodedSymbol
+                + "?period1=" + period1
+                + "&period2=" + period2
+                + "&interval=1d&events=history&includeAdjustedClose=false";
+
+        JsonNode root = readJson(url);
+        JsonNode result = root.path("chart").path("result").path(0);
+        JsonNode timestamps = result.path("timestamp");
+        JsonNode closes = result.path("indicators").path("quote").path(0).path("close");
+
+        if (!timestamps.isArray() || !closes.isArray()) {
+            return List.of();
+        }
+
+        int size = Math.min(timestamps.size(), closes.size());
+        List<YahooDailyPricePoint> points = new ArrayList<>(size);
+
+        for (int i = 0; i < size; i++) {
+            JsonNode tsNode = timestamps.get(i);
+            JsonNode closeNode = closes.get(i);
+            if (tsNode == null || closeNode == null || closeNode.isNull()) {
+                continue;
+            }
+
+            LocalDate tradeDate = Instant.ofEpochSecond(tsNode.asLong()).atZone(ZoneOffset.UTC).toLocalDate();
+            if (tradeDate.isBefore(from) || tradeDate.isAfter(to)) {
+                continue;
+            }
+
+            points.add(new YahooDailyPricePoint(tradeDate, closeNode.decimalValue()));
+        }
+
+        return points;
+    }
+
+    private Optional<BigDecimal> parseRegularMarketPrice(JsonNode meta) {
+        JsonNode priceNode = meta.path("regularMarketPrice");
+        if (priceNode.isMissingNode() || priceNode.isNull()) {
+            return Optional.empty();
+        }
+        return Optional.of(priceNode.decimalValue());
+    }
+
+    private Optional<OffsetDateTime> parseRegularMarketTime(JsonNode meta) {
+        JsonNode marketTimeNode = meta.path("regularMarketTime");
+        if (marketTimeNode.isMissingNode() || marketTimeNode.isNull()) {
+            return Optional.empty();
+        }
+        return Optional.of(OffsetDateTime.ofInstant(
+                java.time.Instant.ofEpochSecond(marketTimeNode.asLong()),
+                ZoneOffset.UTC
+        ));
+    }
+
+    private Optional<BigDecimal> fetchTrailingPe(String symbol) throws IOException, InterruptedException {
+        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+
+        for (int i = 0; i < 2; i++) {
+            String currentCrumb = ensureCrumb();
+            String url = yahooBaseUrl + "/v10/finance/quoteSummary/" + encodedSymbol
+                    + "?modules=summaryDetail&crumb=" + URLEncoder.encode(currentCrumb, StandardCharsets.UTF_8);
+
+            JsonNode root = readJson(url);
+            String errorCode = root.path("finance").path("error").path("code").asText("");
+            if ("Unauthorized".equalsIgnoreCase(errorCode) || "Invalid Crumb".equalsIgnoreCase(errorCode)) {
+                crumb = null;
+                continue;
+            }
+
+            JsonNode trailingPeNode = root.path("quoteSummary")
+                    .path("result")
+                    .path(0)
+                    .path("summaryDetail")
+                    .path("trailingPE")
+                    .path("raw");
+
+            if (trailingPeNode.isMissingNode() || trailingPeNode.isNull()) {
+                return Optional.empty();
+            }
+
+            return Optional.of(trailingPeNode.decimalValue());
+        }
+
+        return Optional.empty();
+    }
+
+    private JsonNode fetchSparkMeta(String symbol) throws IOException, InterruptedException {
+        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        String url = yahooBaseUrl + "/v7/finance/spark?symbols=" + encodedSymbol + "&range=1d&interval=5m";
+        JsonNode root = readJson(url);
+        return root.path("spark")
+                .path("result")
+                .path(0)
+                .path("response")
+                .path(0)
+                .path("meta");
+    }
+
+    private String ensureCrumb() throws IOException, InterruptedException {
+        if (crumb != null && !crumb.isBlank()) {
+            return crumb;
+        }
+
+        HttpRequest primeCookieRequest = HttpRequest.newBuilder(URI.create("https://fc.yahoo.com"))
+                .header("User-Agent", "Mozilla/5.0")
+                .GET()
+                .build();
+        httpClient.send(primeCookieRequest, HttpResponse.BodyHandlers.discarding());
+
+        HttpRequest crumbRequest = HttpRequest.newBuilder(URI.create(yahooBaseUrl + "/v1/test/getcrumb"))
+                .header("User-Agent", "Mozilla/5.0")
+                .GET()
+                .build();
+        HttpResponse<String> crumbResponse = httpClient.send(crumbRequest, HttpResponse.BodyHandlers.ofString());
+
+        if (crumbResponse.statusCode() >= 400 || crumbResponse.body() == null || crumbResponse.body().isBlank()) {
+            throw new IOException("Failed to obtain Yahoo crumb");
+        }
+
+        crumb = crumbResponse.body().trim();
+        return crumb;
+    }
+
+    private JsonNode readJson(String url) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .header("User-Agent", "Mozilla/5.0")
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() >= 400) {
+            throw new IOException("Yahoo request failed with status " + response.statusCode());
+        }
+
+        return objectMapper.readTree(response.body());
+    }
+
+    public record YahooMarketSnapshot(
+            BigDecimal regularMarketPrice,
+            BigDecimal trailingPe,
+            OffsetDateTime regularMarketTime
+    ) {
+    }
+
+    public record YahooDailyPricePoint(
+            LocalDate tradeDate,
+            BigDecimal closePrice
+    ) {
+    }
+}

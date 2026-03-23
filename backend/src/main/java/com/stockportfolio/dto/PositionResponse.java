@@ -8,6 +8,10 @@ public record PositionResponse(
         String symbol,
         BigDecimal quantity,
         BigDecimal averageCost,
+        BigDecimal latestPrice,
+        BigDecimal latestPe,
+        OffsetDateTime priceUpdatedAt,
+        OffsetDateTime peUpdatedAt,
         OffsetDateTime updatedAt
 ) {
 }
