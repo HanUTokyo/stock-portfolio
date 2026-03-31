@@ -175,6 +175,8 @@ input,
 select,
 button {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   border-radius: 10px;
   border: 1px solid var(--panel-border);
   background: var(--bg-elevated);
@@ -720,5 +722,41 @@ tr:hover td {
 
   .allocation-value {
     text-align: left;
+  }
+
+  .history-controls,
+  .cash-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .asset-chart {
+    min-height: 220px;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-shell {
+    width: min(100%, 100vw);
+    margin: 10px auto 20px;
+    padding: 0 8px;
+  }
+
+  .topbar {
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+
+  .panel,
+  .kpi-card {
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .asset-chart {
+    min-height: 240px;
+  }
+
+  input[type='date'] {
+    font-size: 14px;
   }
 }
