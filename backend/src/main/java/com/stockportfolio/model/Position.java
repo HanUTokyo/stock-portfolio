@@ -27,6 +27,9 @@ public class Position {
     @Column(name = "latest_pe", precision = 19, scale = 4)
     private BigDecimal latestPe;
 
+    @Column(name = "latest_peg", precision = 19, scale = 4)
+    private BigDecimal latestPeg;
+
     @Column(name = "price_updated_at")
     private OffsetDateTime priceUpdatedAt;
 
@@ -96,6 +99,14 @@ public class Position {
 
     public void setLatestPe(BigDecimal latestPe) {
         this.latestPe = latestPe;
+    }
+
+    public BigDecimal getLatestPeg() {
+        return latestPeg;
+    }
+
+    public void setLatestPeg(BigDecimal latestPeg) {
+        this.latestPeg = latestPeg;
     }
 
     public OffsetDateTime getPeUpdatedAt() {

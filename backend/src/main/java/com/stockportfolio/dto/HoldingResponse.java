@@ -9,6 +9,7 @@ public record HoldingResponse(
         BigDecimal costBasis,
         BigDecimal latestPrice,
         BigDecimal latestPe,
+        BigDecimal latestPeg,
         BigDecimal marketValue,
         BigDecimal unrealizedPnl
 ) {

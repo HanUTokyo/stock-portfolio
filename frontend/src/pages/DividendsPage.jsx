@@ -1,8 +1,25 @@
 import { useMemo, useState } from 'react';
+import DateInput from '../components/DateInput';
+
+const defaultSort = { key: 'date', direction: 'desc' };
 
 function toNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function compareDividends(a, b, sort) {
+  let result = 0;
+
+  if (sort.key === 'date') {
+    result = new Date(a.paidDate).getTime() - new Date(b.paidDate).getTime();
+  } else if (sort.key === 'symbol') {
+    result = String(a.symbol).localeCompare(String(b.symbol));
+  } else if (sort.key === 'amount') {
+    result = toNumber(a.amount) - toNumber(b.amount);
+  }
+
+  return sort.direction === 'asc' ? result : -result;
 }
 
 function buildDividendBars(monthlyDividends) {
@@ -59,6 +76,24 @@ export default function DividendsPage({
   const [csvFile, setCsvFile] = useState(null);
   const [importResult, setImportResult] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
+  const [sort, setSort] = useState(defaultSort);
+  const sortedDividends = useMemo(() => {
+    return [...dividends].sort((a, b) => compareDividends(a, b, sort));
+  }, [dividends, sort]);
+
+  function toggleSort(key) {
+    setSort((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { key, direction: key === 'date' ? 'desc' : 'asc' };
+    });
+  }
+
+  function sortMark(key) {
+    if (sort.key !== key) return '';
+    return sort.direction === 'asc' ? ' ▲' : ' ▼';
+  }
 
   async function handleImportCsv() {
     if (!csvFile) {
@@ -94,8 +129,7 @@ export default function DividendsPage({
               onChange={(e) => setDividendForm({ ...dividendForm, amount: e.target.value })}
               required
             />
-            <input
-              type="date"
+            <DateInput
               value={dividendForm.paidDate}
               onChange={(e) => setDividendForm({ ...dividendForm, paidDate: e.target.value })}
               required
@@ -155,13 +189,13 @@ export default function DividendsPage({
           <table>
             <thead>
               <tr>
-                <th>Date</th>
-                <th>Symbol</th>
-                <th>Amount</th>
+                <th role="button" tabIndex={0} onClick={() => toggleSort('date')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('date')}>Date{sortMark('date')}</th>
+                <th role="button" tabIndex={0} onClick={() => toggleSort('symbol')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('symbol')}>Symbol{sortMark('symbol')}</th>
+                <th role="button" tabIndex={0} onClick={() => toggleSort('amount')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('amount')}>Amount{sortMark('amount')}</th>
               </tr>
             </thead>
             <tbody>
-              {dividends.map((d) => (
+              {sortedDividends.map((d) => (
                 <tr key={d.id}>
                   <td>{new Date(d.paidDate).toLocaleDateString()}</td>
                   <td>{d.symbol}</td>

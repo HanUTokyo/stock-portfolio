@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import DateInput from '../components/DateInput';
 
 const defaultSort = { key: 'date', direction: 'desc' };
 
@@ -171,8 +172,7 @@ export default function TransactionsPage({
                 <button type="button" className="stepper-btn" onClick={() => adjustTransactionField('price', -1, 0.01, 0.01, 2)}>-</button>
               </div>
             </div>
-            <input
-              type="date"
+            <DateInput
               value={transactionForm.tradeDate}
               onChange={(e) => setTransactionForm({ ...transactionForm, tradeDate: e.target.value })}
               required
@@ -236,7 +236,7 @@ export default function TransactionsPage({
                 const editing = editingId === txn.id;
                 return (
                   <tr key={txn.id}>
-                    <td>{editing ? <input type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} /> : formatDateOnly(txn.executedAt)}</td>
+                    <td>{editing ? <DateInput value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} /> : formatDateOnly(txn.executedAt)}</td>
                     <td>{editing ? <input value={editForm.symbol} onChange={(e) => setEditForm({ ...editForm, symbol: e.target.value })} /> : txn.symbol}</td>
                     <td>{editing ? (
                       <select value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>

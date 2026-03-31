@@ -5,7 +5,9 @@ import java.time.OffsetDateTime;
 
 public record AssetCurvePointResponse(
         OffsetDateTime timestamp,
-        BigDecimal totalAssets
+        BigDecimal totalAssets,
+        BigDecimal totalCostBasis,
+        BigDecimal totalMarketValue,
+        BigDecimal cashBalance
 ) {
 }
-

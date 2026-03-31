@@ -61,6 +61,14 @@ public class PortfolioController {
         return portfolioService.backfillPriceHistory(symbols, years, "MANUAL_BACKFILL");
     }
 
+    @PostMapping("/history/pe/backfill")
+    public PriceHistoryBackfillResponse backfillPeHistory(
+            @RequestParam(required = false) String symbols,
+            @RequestParam(defaultValue = "10") int years
+    ) {
+        return portfolioService.backfillPeHistory(symbols, years, "MANUAL_PE_BACKFILL");
+    }
+
     @GetMapping("/history/prices")
     public List<PriceHistoryPointResponse> priceHistory(
             @RequestParam String symbol,

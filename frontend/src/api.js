@@ -80,6 +80,13 @@ export function syncMarketClose() {
   });
 }
 
+export function createCashAdjustment(payload) {
+  return request('/cash-adjustments', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getDividends() {
   return request('/dividends');
 }

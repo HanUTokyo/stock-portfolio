@@ -50,6 +50,7 @@ public class YahooFinancePriceService {
         BigDecimal price = null;
         OffsetDateTime marketTime = null;
         BigDecimal trailingPe = null;
+        BigDecimal pegRatio = null;
 
         try {
             JsonNode sparkMeta = fetchSparkMeta(symbol);
@@ -59,15 +60,17 @@ public class YahooFinancePriceService {
         }
 
         try {
-            trailingPe = fetchTrailingPe(symbol).orElse(null);
+            ValuationMetrics metrics = fetchValuationMetrics(symbol);
+            trailingPe = metrics.trailingPe();
+            pegRatio = metrics.pegRatio();
         } catch (Exception ignored) {
         }
 
-        if (price == null && trailingPe == null && marketTime == null) {
+        if (price == null && trailingPe == null && pegRatio == null && marketTime == null) {
             return Optional.empty();
         }
 
-        return Optional.of(new YahooMarketSnapshot(price, trailingPe, marketTime));
+        return Optional.of(new YahooMarketSnapshot(price, trailingPe, pegRatio, marketTime));
     }
 
     public List<YahooDailyPricePoint> fetchDailyCloseHistory(String symbol, LocalDate from, LocalDate to)
@@ -114,6 +117,46 @@ public class YahooFinancePriceService {
         return points;
     }
 
+    public List<QuarterlyEpsPoint> fetchQuarterlyBasicEpsHistory(String symbol, LocalDate from, LocalDate to)
+            throws IOException, InterruptedException {
+        if (to.isBefore(from)) {
+            return List.of();
+        }
+
+        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        long period1 = from.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+        long period2 = to.plusDays(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+        String url = yahooBaseUrl + "/ws/fundamentals-timeseries/v1/finance/timeseries/" + encodedSymbol
+                + "?type=quarterlyBasicEPS"
+                + "&period1=" + period1
+                + "&period2=" + period2;
+
+        JsonNode root = readJson(url);
+        JsonNode result = root.path("timeseries").path("result").path(0);
+        JsonNode epsArray = result.path("quarterlyBasicEPS");
+
+        if (!epsArray.isArray()) {
+            return List.of();
+        }
+
+        List<QuarterlyEpsPoint> points = new ArrayList<>();
+        for (JsonNode item : epsArray) {
+            String asOfDateRaw = item.path("asOfDate").asText("");
+            JsonNode rawNode = item.path("reportedValue").path("raw");
+            if (asOfDateRaw.isBlank() || rawNode.isMissingNode() || rawNode.isNull()) {
+                continue;
+            }
+
+            LocalDate asOfDate = LocalDate.parse(asOfDateRaw);
+            if (asOfDate.isBefore(from) || asOfDate.isAfter(to)) {
+                continue;
+            }
+
+            points.add(new QuarterlyEpsPoint(asOfDate, rawNode.decimalValue()));
+        }
+        return points;
+    }
+
     private Optional<BigDecimal> parseRegularMarketPrice(JsonNode meta) {
         JsonNode priceNode = meta.path("regularMarketPrice");
         if (priceNode.isMissingNode() || priceNode.isNull()) {
@@ -133,13 +176,13 @@ public class YahooFinancePriceService {
         ));
     }
 
-    private Optional<BigDecimal> fetchTrailingPe(String symbol) throws IOException, InterruptedException {
+    private ValuationMetrics fetchValuationMetrics(String symbol) throws IOException, InterruptedException {
         String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
 
         for (int i = 0; i < 2; i++) {
             String currentCrumb = ensureCrumb();
             String url = yahooBaseUrl + "/v10/finance/quoteSummary/" + encodedSymbol
-                    + "?modules=summaryDetail&crumb=" + URLEncoder.encode(currentCrumb, StandardCharsets.UTF_8);
+                    + "?modules=summaryDetail,defaultKeyStatistics&crumb=" + URLEncoder.encode(currentCrumb, StandardCharsets.UTF_8);
 
             JsonNode root = readJson(url);
             String errorCode = root.path("finance").path("error").path("code").asText("");
@@ -148,21 +191,31 @@ public class YahooFinancePriceService {
                 continue;
             }
 
-            JsonNode trailingPeNode = root.path("quoteSummary")
+            JsonNode summaryDetail = root.path("quoteSummary")
                     .path("result")
                     .path(0)
-                    .path("summaryDetail")
-                    .path("trailingPE")
-                    .path("raw");
+                    .path("summaryDetail");
+            JsonNode defaultKeyStats = root.path("quoteSummary")
+                    .path("result")
+                    .path(0)
+                    .path("defaultKeyStatistics");
+            JsonNode trailingPeNode = summaryDetail.path("trailingPE").path("raw");
+            JsonNode pegRatioNode = summaryDetail.path("pegRatio").path("raw");
+            JsonNode pegRatioFallbackNode = defaultKeyStats.path("pegRatio").path("raw");
 
-            if (trailingPeNode.isMissingNode() || trailingPeNode.isNull()) {
-                return Optional.empty();
+            BigDecimal trailingPe = trailingPeNode.isMissingNode() || trailingPeNode.isNull()
+                    ? null
+                    : trailingPeNode.decimalValue();
+            BigDecimal pegRatio = pegRatioNode.isMissingNode() || pegRatioNode.isNull()
+                    ? null
+                    : pegRatioNode.decimalValue();
+            if (pegRatio == null && !pegRatioFallbackNode.isMissingNode() && !pegRatioFallbackNode.isNull()) {
+                pegRatio = pegRatioFallbackNode.decimalValue();
             }
-
-            return Optional.of(trailingPeNode.decimalValue());
+            return new ValuationMetrics(trailingPe, pegRatio);
         }
 
-        return Optional.empty();
+        return new ValuationMetrics(null, null);
     }
 
     private JsonNode fetchSparkMeta(String symbol) throws IOException, InterruptedException {
@@ -219,6 +272,7 @@ public class YahooFinancePriceService {
     public record YahooMarketSnapshot(
             BigDecimal regularMarketPrice,
             BigDecimal trailingPe,
+            BigDecimal pegRatio,
             OffsetDateTime regularMarketTime
     ) {
     }
@@ -226,6 +280,18 @@ public class YahooFinancePriceService {
     public record YahooDailyPricePoint(
             LocalDate tradeDate,
             BigDecimal closePrice
+    ) {
+    }
+
+    public record QuarterlyEpsPoint(
+            LocalDate asOfDate,
+            BigDecimal eps
+    ) {
+    }
+
+    private record ValuationMetrics(
+            BigDecimal trailingPe,
+            BigDecimal pegRatio
     ) {
     }
 }

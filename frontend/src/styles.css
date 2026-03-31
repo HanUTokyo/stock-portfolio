@@ -39,6 +39,25 @@ body {
     var(--bg);
 }
 
+body[data-theme='light'] {
+  --bg: #eef3f9;
+  --bg-elevated: #f5f8fc;
+  --panel: #ffffff;
+  --panel-soft: #f5f8fd;
+  --panel-border: #c8d7e7;
+  --text: #1d2a3a;
+  --muted: #5d738d;
+  --positive: #0e9b77;
+  --negative: #cc3d59;
+  --primary: #2e6fdb;
+  --primary-soft: #255bc1;
+
+  background:
+    radial-gradient(circle at 10% 15%, rgba(46, 111, 219, 0.12), transparent 30%),
+    radial-gradient(circle at 90% 0%, rgba(14, 155, 119, 0.1), transparent 25%),
+    var(--bg);
+}
+
 .app-shell {
   width: min(1280px, 95vw);
   margin: 18px auto 32px;
@@ -92,7 +111,7 @@ body {
 
 .tab.active {
   color: var(--text);
-  border-bottom-color: #ffffff;
+  border-bottom-color: var(--text);
 }
 
 .panel,
@@ -157,18 +176,19 @@ select,
 button {
   width: 100%;
   border-radius: 10px;
-  border: 1px solid #2f4057;
-  background: #0d1624;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
   color: var(--text);
   padding: 10px 12px;
   font-family: inherit;
 }
 
 button {
-  border: 1px solid #3572df;
-  background: linear-gradient(135deg, #2655ad, #3f84f0);
+  border: 1px solid var(--primary-soft);
+  background: linear-gradient(135deg, var(--primary-soft), var(--primary));
   font-weight: 700;
   cursor: pointer;
+  color: #edf4ff;
 }
 
 button:hover {
@@ -192,6 +212,11 @@ button:disabled {
   width: auto;
   padding: 6px 10px;
   font-size: 12px;
+}
+
+.theme-toggle {
+  width: auto;
+  min-width: 128px;
 }
 
 .stepper-field {
@@ -226,6 +251,71 @@ button:disabled {
   overflow-x: auto;
 }
 
+.history-table-wrap {
+  margin-top: 12px;
+}
+
+.rank-filter-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.rank-tab {
+  width: auto;
+  padding: 7px 14px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.rank-tab.active {
+  color: var(--text);
+  border-color: #4d95ff;
+  background: linear-gradient(135deg, #204b95, #2f69cb);
+}
+
+.rank-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 96px;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 9px;
+}
+
+.rank-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  padding: 6px 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.rank-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(93, 115, 141, 0.22);
+  overflow: hidden;
+}
+
+.rank-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.rank-fill-positive {
+  background: linear-gradient(90deg, #00b995, #00e0b7);
+}
+
+.rank-fill-negative {
+  background: linear-gradient(90deg, #d92b57, #ff4d6d);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -234,13 +324,13 @@ table {
 th,
 td {
   padding: 10px 8px;
-  border-bottom: 1px solid #1d2a3a;
+  border-bottom: 1px solid var(--panel-border);
   text-align: left;
   white-space: nowrap;
 }
 
 th {
-  color: #9cb0cb;
+  color: var(--muted);
   font-weight: 700;
 }
 
@@ -259,7 +349,7 @@ tr:hover td {
 .bar-track {
   height: 10px;
   border-radius: 999px;
-  background: #1a2738;
+  background: rgba(93, 115, 141, 0.22);
   overflow: hidden;
 }
 
@@ -293,7 +383,7 @@ tr:hover td {
   width: 145px;
   height: 145px;
   border-radius: 50%;
-  background: #090f18;
+  background: var(--bg-elevated);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -334,7 +424,7 @@ tr:hover td {
 .allocation-track {
   height: 10px;
   border-radius: 999px;
-  background: #1a2738;
+  background: rgba(93, 115, 141, 0.22);
   overflow: hidden;
 }
 
@@ -345,7 +435,7 @@ tr:hover td {
 
 .allocation-value {
   text-align: right;
-  color: #d8e3f2;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -360,18 +450,18 @@ tr:hover td {
 .asset-chart {
   width: 100%;
   height: auto;
-  background: linear-gradient(180deg, #03070f 0%, #040b16 100%);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-soft) 100%);
   border-radius: 12px;
-  border: 1px solid #182334;
+  border: 1px solid var(--panel-border);
 }
 
 .chart-axis {
-  stroke: #33475f;
+  stroke: color-mix(in srgb, var(--text) 30%, transparent);
   stroke-width: 1;
 }
 
 .chart-grid {
-  stroke: rgba(96, 120, 150, 0.28);
+  stroke: color-mix(in srgb, var(--muted) 35%, transparent);
   stroke-width: 1;
 }
 
@@ -383,13 +473,20 @@ tr:hover td {
 .chart-line-price,
 .chart-line-pe {
   fill: none;
-  stroke-width: 3;
+  stroke-width: 3.2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .chart-line {
   stroke: #4287ff;
+  filter: drop-shadow(0 0 2px rgba(66, 135, 255, 0.28));
+}
+
+.chart-line-cost-basis {
+  stroke: #9aa8bf;
+  stroke-width: 1.6;
+  opacity: 0.5;
 }
 
 .asset-area {
@@ -398,10 +495,24 @@ tr:hover td {
 
 .chart-line-price {
   stroke: var(--positive);
+  stroke-width: 2.8;
+  opacity: 0.8;
 }
 
 .chart-line-pe {
-  stroke: #6fb6ff;
+  stroke: #8cb6ff;
+  stroke-width: 2.2;
+  stroke-dasharray: 5 4;
+  opacity: 0.95;
+}
+
+.chart-point-price {
+  fill: var(--positive);
+}
+
+.chart-point-pe {
+  fill: #7ea1d6;
+  opacity: 0.65;
 }
 
 .legend-row {
@@ -427,33 +538,41 @@ tr:hover td {
   background: #6fb6ff;
 }
 
+.dot-portfolio {
+  background: #4287ff;
+}
+
+.dot-cost-basis {
+  background: #ffb347;
+}
+
 .chart-caption,
 .muted {
   color: var(--muted);
 }
 
 .chart-label {
-  fill: #8fa3c1;
+  fill: var(--muted);
   font-size: 11px;
 }
 
 .chart-tick {
-  fill: #7f95b6;
+  fill: var(--muted);
   font-size: 10px;
 }
 
 .chart-axis-bottom {
-  stroke: #1a2535;
+  stroke: color-mix(in srgb, var(--muted) 40%, transparent);
   stroke-width: 1;
 }
 
 .chart-tick-right {
-  fill: #c5ccd7;
+  fill: var(--text);
   font-size: 9px;
 }
 
 .chart-tick-bottom {
-  fill: #c5ccd7;
+  fill: var(--text);
   font-size: 9px;
 }
 
@@ -474,7 +593,12 @@ tr:hover td {
 
 .line-end-chip {
   fill: #3d83f7;
-  opacity: 0.95;
+  opacity: 0.9;
+}
+
+.line-end-chip-cost-basis {
+  fill: #b57a2f;
+  opacity: 0.84;
 }
 
 .line-end-chip-text {
@@ -482,17 +606,27 @@ tr:hover td {
   font-size: 9px;
 }
 
+.chart-end-dot-cost-basis {
+  fill: #ffb347;
+}
+
+.cash-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
 .dividend-bar {
   fill: #00c6a7;
 }
 
 .info {
-  color: #74b3ff;
+  color: var(--primary);
   font-weight: 700;
 }
 
 .error {
-  color: #ff6e88;
+  color: var(--negative);
   font-weight: 700;
 }
 
@@ -510,8 +644,8 @@ tr:hover td {
 
 .import-result {
   margin-top: 12px;
-  background: #0e1725;
-  border: 1px solid #263a56;
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
   border-radius: 10px;
   padding: 12px;
 }
@@ -542,8 +676,8 @@ tr:hover td {
   width: min(980px, 95vw);
   max-height: 90vh;
   overflow: auto;
-  background: linear-gradient(160deg, #0c1624 0%, #111b2c 100%);
-  border: 1px solid #2a3b55;
+  background: linear-gradient(160deg, var(--panel) 0%, var(--panel-soft) 100%);
+  border: 1px solid var(--panel-border);
   border-radius: 14px;
   padding: 14px;
 }

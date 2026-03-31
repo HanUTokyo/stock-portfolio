@@ -10,4 +10,5 @@ import java.util.Optional;
 public interface PriceHistoryRepository extends JpaRepository<PriceHistory, Long> {
     Optional<PriceHistory> findBySymbolAndTradeDate(String symbol, LocalDate tradeDate);
     List<PriceHistory> findBySymbolAndTradeDateBetweenOrderByTradeDateAsc(String symbol, LocalDate from, LocalDate to);
+    List<PriceHistory> findAllBySymbolInOrderByTradeDateAsc(List<String> symbols);
 }

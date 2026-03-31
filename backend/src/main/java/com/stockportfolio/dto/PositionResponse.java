@@ -10,6 +10,7 @@ public record PositionResponse(
         BigDecimal averageCost,
         BigDecimal latestPrice,
         BigDecimal latestPe,
+        BigDecimal latestPeg,
         OffsetDateTime priceUpdatedAt,
         OffsetDateTime peUpdatedAt,
         OffsetDateTime updatedAt

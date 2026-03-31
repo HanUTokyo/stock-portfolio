@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import {
+  createCashAdjustment,
   createDividend,
   downloadCsvImportErrors,
   deleteTransaction,
@@ -36,8 +37,24 @@ function createEmptyTransaction() {
 }
 
 const emptyDividend = { symbol: '', amount: '', paidDate: formatDateInput(new Date()) };
+const emptyCashAdjustment = { amount: '', tradeDate: formatDateInput(new Date()) };
+
+function buildDefaultHistoryRange() {
+  const to = new Date();
+  const from = new Date(to);
+  from.setFullYear(from.getFullYear() - 1);
+  return {
+    from: formatDateInput(from),
+    to: formatDateInput(to)
+  };
+}
 
 export default function App() {
+  const defaultHistoryRange = buildDefaultHistoryRange();
+  const [theme, setTheme] = useState(() => {
+    const saved = window.localStorage.getItem('portfolio-theme');
+    return saved === 'light' ? 'light' : 'dark';
+  });
   const [holdings, setHoldings] = useState([]);
   const [summary, setSummary] = useState(null);
   const [transactions, setTransactions] = useState([]);
@@ -47,11 +64,13 @@ export default function App() {
   const [priceHistory, setPriceHistory] = useState([]);
   const [peHistory, setPeHistory] = useState([]);
   const [historySymbol, setHistorySymbol] = useState('');
-  const [historyFrom, setHistoryFrom] = useState(formatDateInput(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)));
-  const [historyTo, setHistoryTo] = useState(formatDateInput(new Date()));
+  const [historyFrom, setHistoryFrom] = useState(defaultHistoryRange.from);
+  const [historyTo, setHistoryTo] = useState(defaultHistoryRange.to);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRequested, setHistoryRequested] = useState(false);
   const [transactionForm, setTransactionForm] = useState(createEmptyTransaction());
   const [dividendForm, setDividendForm] = useState(emptyDividend);
+  const [cashAdjustmentForm, setCashAdjustmentForm] = useState(emptyCashAdjustment);
   const [importFile, setImportFile] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -80,9 +99,6 @@ export default function App() {
       setDividends(dividendsData);
       setMonthlyDividends(monthlyDividendsData);
 
-      if (!historySymbol && holdingsData.length > 0) {
-        setHistorySymbol(holdingsData[0].symbol);
-      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -90,16 +106,24 @@ export default function App() {
     }
   }
 
-  async function loadHistory() {
-    if (!historySymbol) {
+  async function loadHistory(filters = null) {
+    const symbol = String(filters?.symbol ?? historySymbol ?? '').trim().toUpperCase();
+    const from = filters?.from ?? historyFrom;
+    const to = filters?.to ?? historyTo;
+
+    if (!symbol) {
       return;
     }
 
+    setHistorySymbol(symbol);
+    setHistoryFrom(from);
+    setHistoryTo(to);
     setHistoryLoading(true);
+    setHistoryRequested(true);
     try {
       const [prices, pe] = await Promise.all([
-        getPriceHistory(historySymbol, historyFrom, historyTo),
-        getPeHistory(historySymbol, historyFrom, historyTo)
+        getPriceHistory(symbol, from, to),
+        getPeHistory(symbol, from, to)
       ]);
       setPriceHistory(prices);
       setPeHistory(pe);
@@ -110,13 +134,31 @@ export default function App() {
     }
   }
 
+  async function refreshHistoryIfRequested() {
+    if (!historyRequested) {
+      return;
+    }
+    await loadHistory();
+  }
+
+  async function bootstrapMarketData() {
+    try {
+      await Promise.all([refreshPrices(), syncMarketClose()]);
+      await loadDashboard();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   useEffect(() => {
     loadDashboard();
+    bootstrapMarketData();
   }, []);
 
   useEffect(() => {
-    loadHistory();
-  }, [historySymbol, historyFrom, historyTo]);
+    document.body.setAttribute('data-theme', theme);
+    window.localStorage.setItem('portfolio-theme', theme);
+  }, [theme]);
 
   async function handleRecordTransaction(e) {
     e.preventDefault();
@@ -132,7 +174,7 @@ export default function App() {
       });
       setTransactionForm(createEmptyTransaction());
       await loadDashboard();
-      await loadHistory();
+      await refreshHistoryIfRequested();
     } catch (err) {
       setError(err.message);
     }
@@ -146,7 +188,7 @@ export default function App() {
       await deleteTransaction(transactionId);
       setActionResult(`Transaction ${transactionId} deleted.`);
       await loadDashboard();
-      await loadHistory();
+      await refreshHistoryIfRequested();
     } catch (e) {
       setError(e.message);
     }
@@ -160,7 +202,7 @@ export default function App() {
       await updateTransaction(transactionId, payload);
       setActionResult(`Transaction ${transactionId} updated.`);
       await loadDashboard();
-      await loadHistory();
+      await refreshHistoryIfRequested();
     } catch (e) {
       setError(e.message);
       throw e;
@@ -200,29 +242,24 @@ export default function App() {
     }
   }
 
-  async function handleRefreshPrices() {
-    setActionResult('');
-    setError('');
-
-    try {
-      const result = await refreshPrices();
-      setActionResult(`Manual refresh done: ${result.updatedSymbols}/${result.scannedSymbols}`);
-      await loadDashboard();
-      await loadHistory();
-    } catch (e) {
-      setError(e.message);
+  async function handleCashAdjustment(type) {
+    const amount = Number(cashAdjustmentForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Cash amount must be greater than 0.');
+      return;
     }
-  }
 
-  async function handleSyncClose() {
-    setActionResult('');
     setError('');
-
+    setActionResult('');
     try {
-      const result = await syncMarketClose();
-      setActionResult(`Close sync done: success=${result.successfulSymbols}, failed=${result.failedSymbols}, skipped=${result.skippedSymbols}`);
+      await createCashAdjustment({
+        type,
+        amount,
+        occurredAt: new Date(`${cashAdjustmentForm.tradeDate}T00:00:00`).toISOString()
+      });
+      setCashAdjustmentForm(emptyCashAdjustment);
+      setActionResult(type === 'DEPOSIT' ? 'Cash added.' : 'Cash reduced.');
       await loadDashboard();
-      await loadHistory();
     } catch (e) {
       setError(e.message);
     }
@@ -249,7 +286,7 @@ export default function App() {
 
       if (!dryRun) {
         await loadDashboard();
-        await loadHistory();
+        await refreshHistoryIfRequested();
       }
     } catch (e) {
       setError(e.message);
@@ -281,8 +318,8 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Stock Portfolio</p>
-          <h1 className="brand">Control Center</h1>
+          <p className="eyebrow">P&F</p>
+          <h1 className="brand">STOCK PORTFOLIO</h1>
         </div>
         <div className="topbar-actions">
           <nav className="tabs">
@@ -291,6 +328,9 @@ export default function App() {
             <NavLink to="/transactions" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Transactions</NavLink>
             <NavLink to="/dividends" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Dividends</NavLink>
           </nav>
+          <button type="button" className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}>
+            {theme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}
+          </button>
         </div>
       </header>
 
@@ -307,6 +347,9 @@ export default function App() {
               assetCurve={assetCurve}
               holdings={holdings}
               dividends={dividends}
+              cashAdjustmentForm={cashAdjustmentForm}
+              setCashAdjustmentForm={setCashAdjustmentForm}
+              onSubmitCashAdjustment={handleCashAdjustment}
             />
           }
         />
@@ -315,17 +358,13 @@ export default function App() {
           element={
             <MarketDataPage
               historySymbol={historySymbol}
-              setHistorySymbol={setHistorySymbol}
               historyFrom={historyFrom}
-              setHistoryFrom={setHistoryFrom}
               historyTo={historyTo}
-              setHistoryTo={setHistoryTo}
               historyLoading={historyLoading}
+              historyRequested={historyRequested}
               priceHistory={priceHistory}
               peHistory={peHistory}
               onLoadHistory={loadHistory}
-              onRefreshPrices={handleRefreshPrices}
-              onSyncMarketClose={handleSyncClose}
             />
           }
         />

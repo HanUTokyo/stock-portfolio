@@ -1,17 +1,22 @@
 package com.stockportfolio.service;
 
 import com.stockportfolio.dto.*;
+import com.stockportfolio.model.CashAdjustment;
+import com.stockportfolio.model.CashAdjustmentType;
 import com.stockportfolio.model.Dividend;
 import com.stockportfolio.model.PeHistory;
 import com.stockportfolio.model.Position;
 import com.stockportfolio.model.PriceHistory;
 import com.stockportfolio.model.Transaction;
 import com.stockportfolio.model.TransactionType;
+import com.stockportfolio.repository.CashAdjustmentRepository;
 import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.PeHistoryRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
 import com.stockportfolio.repository.TransactionRepository;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +39,7 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
@@ -46,6 +52,7 @@ public class PortfolioService {
     private final PositionRepository positionRepository;
     private final TransactionRepository transactionRepository;
     private final DividendRepository dividendRepository;
+    private final CashAdjustmentRepository cashAdjustmentRepository;
     private final PriceHistoryRepository priceHistoryRepository;
     private final PeHistoryRepository peHistoryRepository;
     private final YahooFinancePriceService yahooFinancePriceService;
@@ -57,6 +64,7 @@ public class PortfolioService {
             PositionRepository positionRepository,
             TransactionRepository transactionRepository,
             DividendRepository dividendRepository,
+            CashAdjustmentRepository cashAdjustmentRepository,
             PriceHistoryRepository priceHistoryRepository,
             PeHistoryRepository peHistoryRepository,
             YahooFinancePriceService yahooFinancePriceService,
@@ -67,6 +75,7 @@ public class PortfolioService {
         this.positionRepository = positionRepository;
         this.transactionRepository = transactionRepository;
         this.dividendRepository = dividendRepository;
+        this.cashAdjustmentRepository = cashAdjustmentRepository;
         this.priceHistoryRepository = priceHistoryRepository;
         this.peHistoryRepository = peHistoryRepository;
         this.yahooFinancePriceService = yahooFinancePriceService;
@@ -106,6 +115,7 @@ public class PortfolioService {
         applyTransactionToPosition(transaction);
 
         Transaction saved = transactionRepository.save(transaction);
+        upsertCashAdjustmentForTransaction(saved);
         return toTransactionResponse(saved);
     }
 
@@ -118,6 +128,7 @@ public class PortfolioService {
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Transaction not found: " + transactionId));
 
         String deletedSymbol = transaction.getSymbol();
+        cashAdjustmentRepository.deleteByTransactionId(transactionId);
         transactionRepository.delete(transaction);
         rebuildPositionFromTransactions(deletedSymbol);
     }
@@ -135,6 +146,7 @@ public class PortfolioService {
         transaction.setExecutedAt(request.executedAt() == null ? OffsetDateTime.now() : request.executedAt());
 
         Transaction saved = transactionRepository.save(transaction);
+        upsertCashAdjustmentForTransaction(saved);
         rebuildPositionFromTransactions(oldSymbol);
         return toTransactionResponse(saved);
     }
@@ -173,6 +185,7 @@ public class PortfolioService {
                             .setScale(4, RoundingMode.HALF_UP);
                     BigDecimal latestPrice = position.getLatestPrice();
                     BigDecimal latestPe = position.getLatestPe();
+                    BigDecimal latestPeg = position.getLatestPeg();
                     BigDecimal marketValue = latestPrice == null
                             ? null
                             : position.getQuantity().multiply(latestPrice).setScale(4, RoundingMode.HALF_UP);
@@ -186,6 +199,7 @@ public class PortfolioService {
                             costBasis,
                             latestPrice,
                             latestPe,
+                            latestPeg,
                             marketValue,
                             unrealizedPnl
                     );
@@ -208,6 +222,24 @@ public class PortfolioService {
         return dividendRepository.findAllByOrderByPaidDateAscIdAsc()
                 .stream()
                 .map(this::toDividendResponse)
+                .toList();
+    }
+
+    public CashAdjustmentResponse recordCashAdjustment(CashAdjustmentRequest request) {
+        CashAdjustment adjustment = new CashAdjustment();
+        adjustment.setType(request.type());
+        adjustment.setAmount(request.amount().setScale(4, RoundingMode.HALF_UP));
+        adjustment.setOccurredAt(request.occurredAt() == null ? OffsetDateTime.now() : request.occurredAt());
+        adjustment.setTransactionId(null);
+        CashAdjustment saved = cashAdjustmentRepository.save(adjustment);
+        return toCashAdjustmentResponse(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CashAdjustmentResponse> listCashAdjustments() {
+        return cashAdjustmentRepository.findAllByOrderByOccurredAtAscIdAsc()
+                .stream()
+                .map(this::toCashAdjustmentResponse)
                 .toList();
     }
 
@@ -290,41 +322,40 @@ public class PortfolioService {
     @Transactional(readOnly = true)
     public PortfolioSummaryResponse getSummary() {
         List<Position> positions = positionRepository.findAll();
-
-        BigDecimal totalCostBasis = positions.stream()
-                .map(p -> p.getQuantity().multiply(p.getAverageCost()))
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(4, RoundingMode.HALF_UP);
-
-        BigDecimal totalUnits = positions.stream()
-                .map(Position::getQuantity)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(4, RoundingMode.HALF_UP);
-
-        BigDecimal totalMarketValue = positions.stream()
-                .map(p -> {
-                    BigDecimal price = p.getLatestPrice() == null ? p.getAverageCost() : p.getLatestPrice();
-                    return p.getQuantity().multiply(price);
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(4, RoundingMode.HALF_UP);
-
-        BigDecimal totalUnrealizedPnl = totalMarketValue.subtract(totalCostBasis).setScale(4, RoundingMode.HALF_UP);
-        BigDecimal totalRealizedGain = calculateTotalRealizedGain();
+        List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
+        java.util.Map<String, Position> positionsBySymbol = positions.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        Position::getSymbol,
+                        p -> p,
+                        (left, right) -> left
+                ));
+        PortfolioMetrics metrics = calculatePortfolioMetrics(positionsBySymbol, transactions);
+        int currentHoldings = (int) positionsBySymbol.values().stream()
+                .filter(p -> p.getQuantity().compareTo(BigDecimal.ZERO) > 0)
+                .count();
+        int trackedSymbols = (int) java.util.stream.Stream.concat(
+                        positionsBySymbol.keySet().stream(),
+                        transactions.stream().map(Transaction::getSymbol)
+                )
+                .filter(s -> s != null && !s.isBlank())
+                .distinct()
+                .count();
 
         return new PortfolioSummaryResponse(
-                positions.size(),
-                totalCostBasis,
-                totalUnits,
-                totalMarketValue,
-                totalUnrealizedPnl,
-                totalRealizedGain
+                trackedSymbols,
+                trackedSymbols,
+                currentHoldings,
+                metrics.totalCostBasis(),
+                metrics.totalUnits(),
+                metrics.totalMarketValue(),
+                metrics.totalUnrealizedPnl(),
+                metrics.totalRealizedGain()
         );
     }
 
     @Transactional(readOnly = true)
-    private BigDecimal calculateTotalRealizedGain() {
-        List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
+    private PortfolioMetrics calculatePortfolioMetrics(java.util.Map<String, Position> positionsBySymbol,
+                                                       List<Transaction> transactions) {
         java.util.Map<String, PositionSnapshot> snapshots = new java.util.HashMap<>();
         BigDecimal totalRealizedGain = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
 
@@ -359,7 +390,53 @@ public class PortfolioService {
             }
         }
 
-        return totalRealizedGain;
+        BigDecimal totalUnits = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal totalCostBasis = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal totalMarketValue = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+
+        for (java.util.Map.Entry<String, PositionSnapshot> entry : snapshots.entrySet()) {
+            String symbol = entry.getKey();
+            PositionSnapshot snapshot = entry.getValue();
+            if (snapshot.quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+
+            BigDecimal costBasis = snapshot.costBasis();
+            Position position = positionsBySymbol.get(symbol);
+            BigDecimal latestPrice = position == null ? null : position.getLatestPrice();
+            BigDecimal marketPrice = latestPrice == null ? snapshot.averageCost : latestPrice;
+            BigDecimal marketValue = snapshot.quantity.multiply(marketPrice).setScale(4, RoundingMode.HALF_UP);
+
+            totalUnits = totalUnits.add(snapshot.quantity).setScale(4, RoundingMode.HALF_UP);
+            totalCostBasis = totalCostBasis.add(costBasis).setScale(4, RoundingMode.HALF_UP);
+            totalMarketValue = totalMarketValue.add(marketValue).setScale(4, RoundingMode.HALF_UP);
+        }
+
+        // Keep compatibility for positions that may exist without transaction history.
+        for (java.util.Map.Entry<String, Position> entry : positionsBySymbol.entrySet()) {
+            String symbol = entry.getKey();
+            if (snapshots.containsKey(symbol)) {
+                continue;
+            }
+
+            Position position = entry.getValue();
+            if (position.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+
+            BigDecimal quantity = position.getQuantity().setScale(4, RoundingMode.HALF_UP);
+            BigDecimal averageCost = position.getAverageCost().setScale(4, RoundingMode.HALF_UP);
+            BigDecimal costBasis = quantity.multiply(averageCost).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal marketPrice = position.getLatestPrice() == null ? averageCost : position.getLatestPrice();
+            BigDecimal marketValue = quantity.multiply(marketPrice).setScale(4, RoundingMode.HALF_UP);
+
+            totalUnits = totalUnits.add(quantity).setScale(4, RoundingMode.HALF_UP);
+            totalCostBasis = totalCostBasis.add(costBasis).setScale(4, RoundingMode.HALF_UP);
+            totalMarketValue = totalMarketValue.add(marketValue).setScale(4, RoundingMode.HALF_UP);
+        }
+
+        BigDecimal totalUnrealizedPnl = totalMarketValue.subtract(totalCostBasis).setScale(4, RoundingMode.HALF_UP);
+        return new PortfolioMetrics(totalCostBasis, totalUnits, totalMarketValue, totalUnrealizedPnl, totalRealizedGain);
     }
 
     public PriceRefreshResponse refreshPrices(String trigger) {
@@ -489,6 +566,84 @@ public class PortfolioService {
         );
     }
 
+    public PriceHistoryBackfillResponse backfillPeHistory(String symbolsCsv, int years, String trigger) {
+        if (years < 1 || years > 30) {
+            throw new ResponseStatusException(BAD_REQUEST, "years must be between 1 and 30");
+        }
+
+        LocalDate toDate = LocalDate.now(marketZone);
+        LocalDate fromDate = toDate.minusYears(years);
+        List<String> symbols = resolveBackfillSymbols(symbolsCsv);
+
+        int successful = 0;
+        int failed = 0;
+        int skipped = 0;
+        int historyPointsWritten = 0;
+
+        for (String symbol : symbols) {
+            try {
+                List<PriceHistory> priceRows =
+                        priceHistoryRepository.findBySymbolAndTradeDateBetweenOrderByTradeDateAsc(symbol, fromDate, toDate);
+                if (priceRows.isEmpty()) {
+                    skipped++;
+                    continue;
+                }
+
+                List<YahooFinancePriceService.QuarterlyEpsPoint> epsRows =
+                        yahooFinancePriceService.fetchQuarterlyBasicEpsHistory(symbol, fromDate.minusYears(2), toDate);
+                List<YahooFinancePriceService.QuarterlyEpsPoint> sortedEps = epsRows.stream()
+                        .sorted(java.util.Comparator.comparing(YahooFinancePriceService.QuarterlyEpsPoint::asOfDate))
+                        .toList();
+
+                if (sortedEps.isEmpty()) {
+                    skipped++;
+                    continue;
+                }
+
+                int epsIndex = 0;
+                BigDecimal activeQuarterlyEps = sortedEps.get(0).eps();
+                int symbolWrites = 0;
+
+                for (PriceHistory priceRow : priceRows) {
+                    while (epsIndex < sortedEps.size()
+                            && !sortedEps.get(epsIndex).asOfDate().isAfter(priceRow.getTradeDate())) {
+                        activeQuarterlyEps = sortedEps.get(epsIndex).eps();
+                        epsIndex++;
+                    }
+
+                    if (activeQuarterlyEps == null || activeQuarterlyEps.compareTo(BigDecimal.ZERO) <= 0) {
+                        continue;
+                    }
+
+                    BigDecimal pe = priceRow.getClosePrice().divide(activeQuarterlyEps, 4, RoundingMode.HALF_UP);
+                    upsertPeHistory(symbol, priceRow.getTradeDate(), pe);
+                    historyPointsWritten++;
+                    symbolWrites++;
+                }
+
+                if (symbolWrites == 0) {
+                    skipped++;
+                } else {
+                    successful++;
+                }
+            } catch (Exception e) {
+                failed++;
+            }
+        }
+
+        return new PriceHistoryBackfillResponse(
+                fromDate,
+                toDate,
+                years,
+                symbols.size(),
+                successful,
+                failed,
+                skipped,
+                historyPointsWritten,
+                trigger
+        );
+    }
+
     @Transactional(readOnly = true)
     public List<PriceHistoryPointResponse> getPriceHistory(String symbol, LocalDate from, LocalDate to) {
         LocalDate toDate = to == null ? LocalDate.now(marketZone) : to;
@@ -516,42 +671,143 @@ public class PortfolioService {
     @Transactional(readOnly = true)
     public List<AssetCurvePointResponse> getAssetCurve() {
         List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
-        java.util.Map<String, PositionSnapshot> snapshots = new java.util.HashMap<>();
-        java.util.List<AssetCurvePointResponse> points = new java.util.ArrayList<>();
+        List<Dividend> dividends = dividendRepository.findAllByOrderByPaidDateAscIdAsc();
+        List<CashAdjustment> cashAdjustments = cashAdjustmentRepository.findAllByOrderByOccurredAtAscIdAsc();
 
-        BigDecimal totalAssets = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        java.util.Set<String> symbols = transactions.stream()
+                .map(Transaction::getSymbol)
+                .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
 
+        if (transactions.isEmpty() && dividends.isEmpty() && cashAdjustments.isEmpty()) {
+            return List.of();
+        }
+
+        java.util.List<PriceHistory> historyRows = symbols.isEmpty()
+                ? List.of()
+                : priceHistoryRepository.findAllBySymbolInOrderByTradeDateAsc(new ArrayList<>(symbols));
+
+        java.util.Map<LocalDate, List<Transaction>> txByDate = new java.util.HashMap<>();
+        java.util.Set<LocalDate> allDates = new java.util.TreeSet<>();
         for (Transaction transaction : transactions) {
-            PositionSnapshot snapshot = snapshots.computeIfAbsent(transaction.getSymbol(), s -> new PositionSnapshot());
-            BigDecimal oldCostBasis = snapshot.costBasis();
+            LocalDate date = transaction.getExecutedAt().atZoneSameInstant(marketZone).toLocalDate();
+            txByDate.computeIfAbsent(date, ignored -> new ArrayList<>()).add(transaction);
+            allDates.add(date);
+        }
 
-            if (transaction.getType() == TransactionType.BUY) {
-                BigDecimal newQuantity = snapshot.quantity.add(transaction.getQuantity());
-                BigDecimal weightedAverage = newQuantity.compareTo(BigDecimal.ZERO) == 0
-                        ? BigDecimal.ZERO
-                        : oldCostBasis.add(transaction.getQuantity().multiply(transaction.getPrice()))
-                        .divide(newQuantity, 4, RoundingMode.HALF_UP);
+        java.util.Map<LocalDate, BigDecimal> dividendsByDate = new java.util.HashMap<>();
+        for (Dividend dividend : dividends) {
+            LocalDate date = dividend.getPaidDate();
+            dividendsByDate.put(date, dividendsByDate.getOrDefault(date, BigDecimal.ZERO).add(dividend.getAmount()));
+            allDates.add(date);
+        }
 
-                snapshot.quantity = newQuantity.setScale(4, RoundingMode.HALF_UP);
-                snapshot.averageCost = weightedAverage.setScale(4, RoundingMode.HALF_UP);
-            } else {
-                BigDecimal remainingQuantity = snapshot.quantity.subtract(transaction.getQuantity());
-                if (remainingQuantity.compareTo(BigDecimal.ZERO) < 0) {
-                    remainingQuantity = BigDecimal.ZERO;
-                }
+        java.util.Map<LocalDate, BigDecimal> cashAdjustmentsByDate = new java.util.HashMap<>();
+        for (CashAdjustment adjustment : cashAdjustments) {
+            LocalDate date = adjustment.getOccurredAt().atZoneSameInstant(marketZone).toLocalDate();
+            BigDecimal signed = signedCashAdjustment(adjustment);
+            cashAdjustmentsByDate.put(date, cashAdjustmentsByDate.getOrDefault(date, BigDecimal.ZERO).add(signed));
+            allDates.add(date);
+        }
 
-                snapshot.quantity = remainingQuantity.setScale(4, RoundingMode.HALF_UP);
-                if (remainingQuantity.compareTo(BigDecimal.ZERO) == 0) {
-                    snapshot.averageCost = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
-                }
+        if (allDates.isEmpty()) {
+            return List.of();
+        }
+        LocalDate curveStartDate = allDates.stream().min(LocalDate::compareTo).orElseThrow();
+
+        java.util.Map<LocalDate, java.util.Map<String, BigDecimal>> closePriceByDateAndSymbol = new java.util.HashMap<>();
+        for (PriceHistory row : historyRows) {
+            if (row.getTradeDate().isBefore(curveStartDate)) {
+                continue;
+            }
+            closePriceByDateAndSymbol
+                    .computeIfAbsent(row.getTradeDate(), ignored -> new java.util.HashMap<>())
+                    .put(row.getSymbol(), row.getClosePrice());
+            allDates.add(row.getTradeDate());
+        }
+
+        java.util.Map<String, PositionSnapshot> snapshots = new java.util.HashMap<>();
+        java.util.Map<String, BigDecimal> lastClosePriceBySymbol = new java.util.HashMap<>();
+        java.util.List<AssetCurvePointResponse> points = new ArrayList<>();
+        BigDecimal cashBalance = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+
+        for (LocalDate date : allDates) {
+            java.util.Map<String, BigDecimal> closesToday = closePriceByDateAndSymbol.getOrDefault(date, java.util.Collections.emptyMap());
+            lastClosePriceBySymbol.putAll(closesToday);
+
+            List<Transaction> txns = txByDate.getOrDefault(date, List.of());
+            for (Transaction txn : txns) {
+                PositionSnapshot snapshot = snapshots.computeIfAbsent(txn.getSymbol(), ignored -> new PositionSnapshot());
+                applyTransactionToSnapshot(snapshot, txn);
             }
 
-            BigDecimal newCostBasis = snapshot.costBasis();
-            totalAssets = totalAssets.subtract(oldCostBasis).add(newCostBasis).setScale(4, RoundingMode.HALF_UP);
-            points.add(new AssetCurvePointResponse(transaction.getExecutedAt(), totalAssets));
+            cashBalance = cashBalance
+                    .add(dividendsByDate.getOrDefault(date, BigDecimal.ZERO))
+                    .add(cashAdjustmentsByDate.getOrDefault(date, BigDecimal.ZERO))
+                    .setScale(4, RoundingMode.HALF_UP);
+
+            BigDecimal totalCostBasis = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+            BigDecimal totalMarketValue = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+
+            for (java.util.Map.Entry<String, PositionSnapshot> entry : snapshots.entrySet()) {
+                PositionSnapshot snapshot = entry.getValue();
+                if (snapshot.quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+
+                totalCostBasis = totalCostBasis.add(snapshot.costBasis()).setScale(4, RoundingMode.HALF_UP);
+
+                BigDecimal close = lastClosePriceBySymbol.get(entry.getKey());
+                BigDecimal markPrice = close == null ? snapshot.averageCost : close;
+                totalMarketValue = totalMarketValue
+                        .add(snapshot.quantity.multiply(markPrice))
+                        .setScale(4, RoundingMode.HALF_UP);
+            }
+
+            BigDecimal totalAssets = totalMarketValue.add(cashBalance).setScale(4, RoundingMode.HALF_UP);
+            OffsetDateTime timestamp = date.atStartOfDay(marketZone).toOffsetDateTime();
+            points.add(new AssetCurvePointResponse(timestamp, totalAssets, totalCostBasis, totalMarketValue, cashBalance));
         }
 
         return points;
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void reconcileTransactionCashAdjustmentsOnStartup() {
+        syncTransactionCashAdjustments();
+    }
+
+    private void syncTransactionCashAdjustments() {
+        List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
+        Set<Long> transactionIds = transactions.stream().map(Transaction::getId).collect(java.util.stream.Collectors.toSet());
+
+        for (CashAdjustment adjustment : cashAdjustmentRepository.findAllByTransactionIdIsNotNull()) {
+            Long txId = adjustment.getTransactionId();
+            if (txId != null && !transactionIds.contains(txId)) {
+                cashAdjustmentRepository.delete(adjustment);
+            }
+        }
+
+        for (Transaction transaction : transactions) {
+            upsertCashAdjustmentForTransaction(transaction);
+        }
+    }
+
+    private void upsertCashAdjustmentForTransaction(Transaction transaction) {
+        if (transaction.getId() == null) {
+            return;
+        }
+
+        CashAdjustment adjustment = cashAdjustmentRepository.findByTransactionId(transaction.getId())
+                .orElseGet(CashAdjustment::new);
+        adjustment.setTransactionId(transaction.getId());
+        adjustment.setType(transaction.getType() == TransactionType.BUY
+                ? CashAdjustmentType.WITHDRAWAL
+                : CashAdjustmentType.DEPOSIT);
+        adjustment.setAmount(transaction.getQuantity()
+                .multiply(transaction.getPrice())
+                .setScale(4, RoundingMode.HALF_UP));
+        adjustment.setOccurredAt(transaction.getExecutedAt());
+        cashAdjustmentRepository.save(adjustment);
     }
 
     private Optional<YahooFinancePriceService.YahooMarketSnapshot> fetchSnapshotWithRetry(String symbol) {
@@ -614,6 +870,11 @@ public class PortfolioService {
         if (snapshot.trailingPe() != null) {
             position.setLatestPe(snapshot.trailingPe().setScale(4, RoundingMode.HALF_UP));
             position.setPeUpdatedAt(now);
+            changed = true;
+        }
+
+        if (snapshot.pegRatio() != null) {
+            position.setLatestPeg(snapshot.pegRatio().setScale(4, RoundingMode.HALF_UP));
             changed = true;
         }
 
@@ -866,6 +1127,7 @@ public class PortfolioService {
                 position.getAverageCost(),
                 position.getLatestPrice(),
                 position.getLatestPe(),
+                position.getLatestPeg(),
                 position.getPriceUpdatedAt(),
                 position.getPeUpdatedAt(),
                 position.getUpdatedAt()
@@ -893,6 +1155,24 @@ public class PortfolioService {
         );
     }
 
+    private CashAdjustmentResponse toCashAdjustmentResponse(CashAdjustment adjustment) {
+        return new CashAdjustmentResponse(
+                adjustment.getId(),
+                adjustment.getType(),
+                adjustment.getAmount(),
+                signedCashAdjustment(adjustment),
+                adjustment.getOccurredAt(),
+                adjustment.getCreatedAt()
+        );
+    }
+
+    private BigDecimal signedCashAdjustment(CashAdjustment adjustment) {
+        if (adjustment.getType() == CashAdjustmentType.WITHDRAWAL) {
+            return adjustment.getAmount().negate().setScale(4, RoundingMode.HALF_UP);
+        }
+        return adjustment.getAmount().setScale(4, RoundingMode.HALF_UP);
+    }
+
     private record CsvImportAnalysis(
             int totalRows,
             int importedRows,
@@ -900,6 +1180,15 @@ public class PortfolioService {
             int failedRows,
             List<String> sampleErrors,
             List<TransactionCsvFailedRow> failedRowsDetail
+    ) {
+    }
+
+    private record PortfolioMetrics(
+            BigDecimal totalCostBasis,
+            BigDecimal totalUnits,
+            BigDecimal totalMarketValue,
+            BigDecimal totalUnrealizedPnl,
+            BigDecimal totalRealizedGain
     ) {
     }
 
