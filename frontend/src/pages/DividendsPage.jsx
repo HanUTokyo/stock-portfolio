@@ -43,15 +43,29 @@ function buildDividendBars(monthlyDividends) {
     const h = (value / maxValue) * (plotBottom - plotTop);
     const x = plotLeft + i * slot + (slot - barWidth) / 2;
     const y = plotBottom - h;
+    const year = String(d.month).slice(0, 4);
+    const monthLabel = new Date(`${d.month}-01T00:00:00Z`).toLocaleDateString('en-US', { month: 'short' });
+    const prevYear = i > 0 ? String(monthlyDividends[i - 1].month).slice(0, 4) : null;
+    const isYearMark = i === 0 || prevYear !== year;
     return {
       x,
       y,
       width: barWidth,
       height: h,
       value,
-      monthLabel: d.month
+      rawMonth: d.month,
+      monthLabel: isYearMark ? year : monthLabel,
+      isYearMark
     };
   });
+
+  const yearSeparators = bars
+    .map((bar, i) => ({ bar, i }))
+    .filter((item) => item.i > 0 && item.bar.isYearMark)
+    .map((item) => ({
+      x: plotLeft + item.i * slot,
+      year: item.bar.monthLabel
+    }));
 
   return {
     hasData: true,
@@ -60,7 +74,8 @@ function buildDividendBars(monthlyDividends) {
     plotLeft,
     plotRight,
     plotBottom,
-    bars
+    bars,
+    yearSeparators
   };
 }
 
@@ -166,11 +181,26 @@ export default function DividendsPage({
         {chart.hasData ? (
           <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="asset-chart" role="img" aria-label="Monthly total dividends bar chart">
             <line x1={chart.plotLeft} y1={chart.plotBottom} x2={chart.plotRight} y2={chart.plotBottom} className="chart-axis-bottom" />
+            {chart.yearSeparators.map((separator) => (
+              <line
+                key={`dividend-year-${separator.year}-${separator.x}`}
+                x1={separator.x}
+                y1={20}
+                x2={separator.x}
+                y2={chart.plotBottom}
+                className="year-separator"
+              />
+            ))}
             {chart.bars.map((bar) => (
-              <g key={bar.monthLabel}>
+              <g key={bar.rawMonth}>
                 <rect x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx="3" className="dividend-bar" />
-                <text x={bar.x + bar.width / 2} y={chart.plotBottom + 14} textAnchor="middle" className="chart-tick-bottom">
-                  {bar.monthLabel.slice(5)}
+                <text
+                  x={bar.x + bar.width / 2}
+                  y={chart.plotBottom + 14}
+                  textAnchor="middle"
+                  className={`chart-tick-bottom ${bar.isYearMark ? 'year-tick' : ''}`}
+                >
+                  {bar.monthLabel}
                 </text>
                 <text x={bar.x + bar.width / 2} y={Math.max(bar.y - 6, 10)} textAnchor="middle" className="chart-tick-right">
                   ${bar.value.toFixed(2)}

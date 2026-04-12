@@ -11,6 +11,7 @@ public record TransactionResponse(
         TransactionType type,
         BigDecimal quantity,
         BigDecimal price,
+        String note,
         OffsetDateTime executedAt
 ) {
 }

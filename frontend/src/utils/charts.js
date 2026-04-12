@@ -267,6 +267,11 @@ export function buildComparisonChart(priceHistory, peHistory) {
     ...item,
     x: plotLeft + ((new Date(`${item.time}T00:00:00Z`).getTime() - minTime) / timeSpan) * plotWidth
   }));
+  const yearSeparators = buildComparisonYearSeparators(dates).map((date) => ({
+    date,
+    x: plotLeft + ((new Date(`${date}T00:00:00Z`).getTime() - minTime) / timeSpan) * plotWidth,
+    year: String(date).slice(0, 4)
+  }));
 
   return {
     hasData: true,
@@ -283,6 +288,7 @@ export function buildComparisonChart(priceHistory, peHistory) {
     yTicksPrice,
     yTicksPe,
     xTicks,
+    yearSeparators,
     firstDate: dates[0],
     lastDate: dates[dates.length - 1],
     priceMin,
@@ -290,6 +296,19 @@ export function buildComparisonChart(priceHistory, peHistory) {
     peMin,
     peMax
   };
+}
+
+function buildComparisonYearSeparators(dates) {
+  const result = [];
+  let prevYear = null;
+  for (let i = 0; i < dates.length; i += 1) {
+    const year = String(dates[i]).slice(0, 4);
+    if (prevYear != null && year !== prevYear) {
+      result.push(dates[i]);
+    }
+    prevYear = year;
+  }
+  return result;
 }
 
 function buildLinearTicks(minValue, maxValue, count) {

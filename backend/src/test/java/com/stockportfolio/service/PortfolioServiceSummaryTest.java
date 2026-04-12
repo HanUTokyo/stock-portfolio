@@ -10,6 +10,7 @@ import com.stockportfolio.repository.CashAdjustmentRepository;
 import com.stockportfolio.repository.PeHistoryRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
+import com.stockportfolio.repository.StockNoteRepository;
 import com.stockportfolio.repository.TransactionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -38,6 +39,8 @@ class PortfolioServiceSummaryTest {
     private PriceHistoryRepository priceHistoryRepository;
     @Mock
     private PeHistoryRepository peHistoryRepository;
+    @Mock
+    private StockNoteRepository stockNoteRepository;
 
     @Test
     void getSummary_shouldCalculateRealizedAndUnrealizedAcrossPartialSellAndRebuy() {
@@ -142,6 +145,7 @@ class PortfolioServiceSummaryTest {
                 cashAdjustmentRepository,
                 priceHistoryRepository,
                 peHistoryRepository,
+                stockNoteRepository,
                 new YahooFinancePriceService("https://query1.finance.yahoo.com", new ObjectMapper()),
                 3,
                 0,

@@ -56,6 +56,17 @@ export function updateTransaction(transactionId, payload) {
   });
 }
 
+export function getStockNotes() {
+  return request('/stock-notes');
+}
+
+export function updateStockNote(symbol, payload) {
+  return request(`/stock-notes/${encodeURIComponent(symbol)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getHoldings() {
   return request('/portfolio/holdings');
 }

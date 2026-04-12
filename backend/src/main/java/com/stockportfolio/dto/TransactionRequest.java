@@ -12,6 +12,7 @@ public record TransactionRequest(
         @NotNull TransactionType type,
         @NotNull @DecimalMin(value = "0.0001", inclusive = true) BigDecimal quantity,
         @NotNull @DecimalMin(value = "0.0001", inclusive = true) BigDecimal price,
+        String note,
         OffsetDateTime executedAt
 ) {
 }

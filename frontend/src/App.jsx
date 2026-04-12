@@ -11,6 +11,7 @@ import {
   getMonthlyDividends,
   getPeHistory,
   getPriceHistory,
+  getStockNotes,
   getSummary,
   getTransactions,
   importDividendsCsv,
@@ -18,12 +19,14 @@ import {
   recordTransaction,
   refreshPrices,
   syncMarketClose,
+  updateStockNote,
   updateTransaction
 } from './api';
 import OverviewPage from './pages/OverviewPage';
 import MarketDataPage from './pages/MarketDataPage';
 import TransactionsPage from './pages/TransactionsPage';
 import DividendsPage from './pages/DividendsPage';
+import NotesPage from './pages/NotesPage';
 import { formatDateInput } from './utils/charts';
 
 function createEmptyTransaction() {
@@ -32,6 +35,7 @@ function createEmptyTransaction() {
     type: 'BUY',
     quantity: '',
     price: '',
+    note: '',
     tradeDate: formatDateInput(new Date())
   };
 }
@@ -58,6 +62,7 @@ export default function App() {
   const [holdings, setHoldings] = useState([]);
   const [summary, setSummary] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [stockNotes, setStockNotes] = useState([]);
   const [dividends, setDividends] = useState([]);
   const [monthlyDividends, setMonthlyDividends] = useState([]);
   const [assetCurve, setAssetCurve] = useState([]);
@@ -83,13 +88,14 @@ export default function App() {
     setError('');
 
     try {
-      const [holdingsData, summaryData, transactionsData, assetCurveData, dividendsData, monthlyDividendsData] = await Promise.all([
+      const [holdingsData, summaryData, transactionsData, assetCurveData, dividendsData, monthlyDividendsData, stockNotesData] = await Promise.all([
         getHoldings(),
         getSummary(),
         getTransactions(),
         getAssetCurve(),
         getDividends(),
-        getMonthlyDividends()
+        getMonthlyDividends(),
+        getStockNotes()
       ]);
 
       setHoldings(holdingsData);
@@ -98,6 +104,7 @@ export default function App() {
       setAssetCurve(assetCurveData);
       setDividends(dividendsData);
       setMonthlyDividends(monthlyDividendsData);
+      setStockNotes(stockNotesData);
 
     } catch (e) {
       setError(e.message);
@@ -170,6 +177,7 @@ export default function App() {
         type: transactionForm.type,
         quantity: Number(transactionForm.quantity),
         price: Number(transactionForm.price),
+        note: transactionForm.note,
         executedAt: new Date(`${transactionForm.tradeDate}T00:00:00`).toISOString()
       });
       setTransactionForm(createEmptyTransaction());
@@ -236,6 +244,23 @@ export default function App() {
       setActionResult(`Dividend CSV imported: imported=${result.importedRows}, failed=${result.failedRows}, skipped=${result.skippedRows}`);
       await loadDashboard();
       return result;
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    }
+  }
+
+  async function handleSaveStockNote(symbol, note) {
+    setError('');
+    setActionResult('');
+    try {
+      const saved = await updateStockNote(symbol, { note });
+      setStockNotes((prev) => {
+        const next = prev.filter((item) => item.symbol !== saved.symbol);
+        next.push(saved);
+        return next.sort((a, b) => a.symbol.localeCompare(b.symbol));
+      });
+      setActionResult(`Saved stock note for ${saved.symbol}.`);
     } catch (e) {
       setError(e.message);
       throw e;
@@ -327,6 +352,7 @@ export default function App() {
             <NavLink to="/market" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Market Data</NavLink>
             <NavLink to="/transactions" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Transactions</NavLink>
             <NavLink to="/dividends" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Dividends</NavLink>
+            <NavLink to="/notes" className={({ isActive }) => (isActive ? 'tab active' : 'tab')}>Notes</NavLink>
           </nav>
           <button type="button" className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}>
             {theme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}
@@ -347,6 +373,7 @@ export default function App() {
               assetCurve={assetCurve}
               holdings={holdings}
               dividends={dividends}
+              transactions={transactions}
               cashAdjustmentForm={cashAdjustmentForm}
               setCashAdjustmentForm={setCashAdjustmentForm}
               onSubmitCashAdjustment={handleCashAdjustment}
@@ -364,6 +391,8 @@ export default function App() {
               historyRequested={historyRequested}
               priceHistory={priceHistory}
               peHistory={peHistory}
+              transactions={transactions}
+              holdings={holdings}
               onLoadHistory={loadHistory}
             />
           }
@@ -387,6 +416,17 @@ export default function App() {
               onDownloadImportErrors={handleDownloadErrors}
             />
           }
+        />
+        <Route
+          path="/notes"
+          element={(
+            <NotesPage
+              transactions={transactions}
+              holdings={holdings}
+              stockNotes={stockNotes}
+              onSaveStockNote={handleSaveStockNote}
+            />
+          )}
         />
         <Route
           path="/dividends"

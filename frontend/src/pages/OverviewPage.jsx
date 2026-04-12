@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { buildAssetChart, formatCurrency } from '../utils/charts';
 import DateInput from '../components/DateInput';
 
@@ -73,11 +73,125 @@ function compareAllocation(a, b, sort) {
   return sort.direction === 'asc' ? result : -result;
 }
 
+function sortedTransactions(transactions) {
+  return [...transactions].sort((a, b) => {
+    const timeDiff = new Date(a.executedAt).getTime() - new Date(b.executedAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return toNumber(a.id) - toNumber(b.id);
+  });
+}
+
+function buildPositionGroups(holdings, transactions) {
+  const currentRows = holdings
+    .filter((item) => toNumber(item.quantity) > 0)
+    .map((item) => ({
+      symbol: String(item.symbol || '').toUpperCase(),
+      quantity: toNumber(item.quantity),
+      averageCost: toNumber(item.averageCost),
+      marketValue: toNumber(item.marketValue),
+      unrealizedPnl: toNumber(item.unrealizedPnl)
+    }))
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+  const currentSymbols = new Set(currentRows.map((item) => item.symbol));
+  const allSymbols = new Set(currentRows.map((item) => item.symbol));
+  transactions.forEach((txn) => {
+    const symbol = String(txn.symbol || '').toUpperCase();
+    if (symbol) allSymbols.add(symbol);
+  });
+
+  const txBySymbol = transactions.reduce((acc, txn) => {
+    const symbol = String(txn.symbol || '').toUpperCase();
+    if (!symbol) return acc;
+    if (!acc[symbol]) acc[symbol] = [];
+    acc[symbol].push(txn);
+    return acc;
+  }, {});
+
+  const pastRows = [...allSymbols]
+    .filter((symbol) => !currentSymbols.has(symbol))
+    .map((symbol) => {
+      const symbolTx = txBySymbol[symbol] || [];
+      const buyQty = symbolTx
+        .filter((txn) => txn.type === 'BUY')
+        .reduce((sum, txn) => sum + toNumber(txn.quantity), 0);
+      const sellQty = symbolTx
+        .filter((txn) => txn.type === 'SELL')
+        .reduce((sum, txn) => sum + toNumber(txn.quantity), 0);
+      const lastTradeAt = symbolTx.length
+        ? symbolTx.reduce((latest, txn) => (new Date(txn.executedAt) > new Date(latest) ? txn.executedAt : latest), symbolTx[0].executedAt)
+        : null;
+      return { symbol, buyQty, sellQty, lastTradeAt };
+    })
+    .sort((a, b) => {
+      if (!a.lastTradeAt && !b.lastTradeAt) return a.symbol.localeCompare(b.symbol);
+      if (!a.lastTradeAt) return 1;
+      if (!b.lastTradeAt) return -1;
+      return new Date(b.lastTradeAt) - new Date(a.lastTradeAt);
+    });
+
+  return { currentRows, pastRows };
+}
+
+function buildRealizedGainRecords(transactions) {
+  const ordered = sortedTransactions(transactions);
+  const snapshots = new Map();
+  const records = [];
+  let cumulativeGain = 0;
+
+  ordered.forEach((txn) => {
+    const symbol = String(txn.symbol || '').toUpperCase();
+    const quantity = toNumber(txn.quantity);
+    const price = toNumber(txn.price);
+    if (!symbol || quantity <= 0) return;
+
+    const current = snapshots.get(symbol) || { quantity: 0, averageCost: 0 };
+    if (txn.type === 'BUY') {
+      const newQty = current.quantity + quantity;
+      const weightedAverage = newQty <= 0
+        ? 0
+        : ((current.quantity * current.averageCost) + (quantity * price)) / newQty;
+      snapshots.set(symbol, { quantity: newQty, averageCost: weightedAverage });
+      return;
+    }
+
+    const costPerShare = current.averageCost;
+    const realizedGain = quantity * (price - costPerShare);
+    cumulativeGain += realizedGain;
+    const remainingQuantity = current.quantity - quantity;
+    snapshots.set(symbol, {
+      quantity: Math.max(remainingQuantity, 0),
+      averageCost: remainingQuantity <= 0 ? 0 : current.averageCost
+    });
+
+    records.push({
+      id: txn.id,
+      executedAt: txn.executedAt,
+      symbol,
+      quantity,
+      sellPrice: price,
+      costPerShare,
+      realizedGain,
+      cumulativeGain
+    });
+  });
+
+  return records.sort((a, b) => new Date(b.executedAt) - new Date(a.executedAt));
+}
+
+function onCardKeyDown(event, onEnter) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    onEnter();
+  }
+}
+
 export default function OverviewPage({
   summary,
   assetCurve,
   holdings,
   dividends,
+  transactions,
   cashAdjustmentForm,
   setCashAdjustmentForm,
   onSubmitCashAdjustment
@@ -96,6 +210,22 @@ export default function OverviewPage({
   const allocation = useMemo(() => buildAllocation(holdings, dividends, latestCashBalance), [holdings, dividends, latestCashBalance]);
   const [sort, setSort] = useState(defaultSort);
   const [topView, setTopView] = useState('ALL');
+  const [showPositionModal, setShowPositionModal] = useState(false);
+  const [showRealizedModal, setShowRealizedModal] = useState(false);
+  const [positionView, setPositionView] = useState('CURRENT');
+  const positionGroups = useMemo(() => buildPositionGroups(holdings, transactions), [holdings, transactions]);
+  const realizedGainRecords = useMemo(() => buildRealizedGainRecords(transactions), [transactions]);
+
+  useEffect(() => {
+    if (!showPositionModal && !showRealizedModal) return undefined;
+    function handleKeyDown(event) {
+      if (event.key !== 'Escape') return;
+      setShowPositionModal(false);
+      setShowRealizedModal(false);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showPositionModal, showRealizedModal]);
 
   const sortedAllocation = useMemo(() => {
     return [...allocation].sort((a, b) => compareAllocation(a, b, sort));
@@ -147,17 +277,29 @@ export default function OverviewPage({
           </h3>
           <span>Cost Basis ${summary?.totalCostBasis ?? 0}</span>
         </article>
-        <article className="kpi-card">
+        <article
+          className="kpi-card kpi-card-clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => setShowRealizedModal(true)}
+          onKeyDown={(event) => onCardKeyDown(event, () => setShowRealizedModal(true))}
+        >
           <p>Realized gain</p>
           <h3 className={toNumber(summary?.totalRealizedGain) >= 0 ? 'positive' : 'negative'}>
             ${summary?.totalRealizedGain ?? 0}
           </h3>
-          <span>Closed Transactions</span>
+          <span>Closed Transactions (Click for records)</span>
         </article>
-        <article className="kpi-card">
+        <article
+          className="kpi-card kpi-card-clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => setShowPositionModal(true)}
+          onKeyDown={(event) => onCardKeyDown(event, () => setShowPositionModal(true))}
+        >
           <p>Position Count</p>
           <h3>{summary?.currentHoldings ?? 0}</h3>
-          <span>Historical Count {summary?.trackedSymbols ?? summary?.totalPositions ?? 0}</span>
+          <span>Historical Count {summary?.trackedSymbols ?? summary?.totalPositions ?? 0} (Click for details)</span>
         </article>
       </section>
 
@@ -358,6 +500,134 @@ export default function OverviewPage({
           );
         }) : <p className="muted">No rows for selected filter.</p>}
       </section>
+
+      {showPositionModal ? (
+        <div className="modal-backdrop" onClick={() => setShowPositionModal(false)}>
+          <div className="modal-card" role="dialog" aria-modal="true" aria-label="Position details" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Position Count Details</h2>
+              <button type="button" className="modal-close" onClick={() => setShowPositionModal(false)}>Close</button>
+            </div>
+            <div className="rank-filter-tabs">
+              <button type="button" className={positionView === 'CURRENT' ? 'rank-tab active' : 'rank-tab'} onClick={() => setPositionView('CURRENT')}>
+                Current Holdings ({positionGroups.currentRows.length})
+              </button>
+              <button type="button" className={positionView === 'PAST' ? 'rank-tab active' : 'rank-tab'} onClick={() => setPositionView('PAST')}>
+                Past Holdings ({positionGroups.pastRows.length})
+              </button>
+            </div>
+            {positionView === 'CURRENT' ? (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Quantity</th>
+                      <th>Average Cost</th>
+                      <th>Market Value</th>
+                      <th>Unrealized</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positionGroups.currentRows.map((item) => (
+                      <tr key={`current-${item.symbol}`}>
+                        <td>{item.symbol}</td>
+                        <td>{item.quantity.toFixed(4)}</td>
+                        <td>${item.averageCost.toFixed(4)}</td>
+                        <td>${item.marketValue.toFixed(2)}</td>
+                        <td className={item.unrealizedPnl >= 0 ? 'positive' : 'negative'}>
+                          {item.unrealizedPnl >= 0 ? '+' : ''}{item.unrealizedPnl.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                    {!positionGroups.currentRows.length ? (
+                      <tr>
+                        <td colSpan={5} className="muted">No current holdings.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Last Trade</th>
+                      <th>Total Bought</th>
+                      <th>Total Sold</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positionGroups.pastRows.map((item) => (
+                      <tr key={`past-${item.symbol}`}>
+                        <td>{item.symbol}</td>
+                        <td>{item.lastTradeAt ? new Date(item.lastTradeAt).toLocaleDateString() : '--'}</td>
+                        <td>{item.buyQty.toFixed(4)}</td>
+                        <td>{item.sellQty.toFixed(4)}</td>
+                      </tr>
+                    ))}
+                    {!positionGroups.pastRows.length ? (
+                      <tr>
+                        <td colSpan={4} className="muted">No past holdings yet.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {showRealizedModal ? (
+        <div className="modal-backdrop" onClick={() => setShowRealizedModal(false)}>
+          <div className="modal-card" role="dialog" aria-modal="true" aria-label="Realized gain records" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Realized Gain Records</h2>
+              <button type="button" className="modal-close" onClick={() => setShowRealizedModal(false)}>Close</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Symbol</th>
+                    <th>Sold Qty</th>
+                    <th>Sell Price</th>
+                    <th>Cost/Share</th>
+                    <th>Gain</th>
+                    <th>Cumulative</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {realizedGainRecords.map((item) => (
+                    <tr key={`realized-${item.id}`}>
+                      <td>{new Date(item.executedAt).toLocaleDateString()}</td>
+                      <td>{item.symbol}</td>
+                      <td>{item.quantity.toFixed(4)}</td>
+                      <td>${item.sellPrice.toFixed(4)}</td>
+                      <td>${item.costPerShare.toFixed(4)}</td>
+                      <td className={item.realizedGain >= 0 ? 'positive' : 'negative'}>
+                        {item.realizedGain >= 0 ? '+' : ''}{item.realizedGain.toFixed(2)}
+                      </td>
+                      <td className={item.cumulativeGain >= 0 ? 'positive' : 'negative'}>
+                        {item.cumulativeGain >= 0 ? '+' : ''}{item.cumulativeGain.toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!realizedGainRecords.length ? (
+                    <tr>
+                      <td colSpan={7} className="muted">No realized gain records yet.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
     </>
   );

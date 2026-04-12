@@ -14,6 +14,7 @@ import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.PeHistoryRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
+import com.stockportfolio.repository.StockNoteRepository;
 import com.stockportfolio.repository.TransactionRepository;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -55,6 +56,7 @@ public class PortfolioService {
     private final CashAdjustmentRepository cashAdjustmentRepository;
     private final PriceHistoryRepository priceHistoryRepository;
     private final PeHistoryRepository peHistoryRepository;
+    private final StockNoteRepository stockNoteRepository;
     private final YahooFinancePriceService yahooFinancePriceService;
     private final int retryMaxAttempts;
     private final long retryBackoffMs;
@@ -67,6 +69,7 @@ public class PortfolioService {
             CashAdjustmentRepository cashAdjustmentRepository,
             PriceHistoryRepository priceHistoryRepository,
             PeHistoryRepository peHistoryRepository,
+            StockNoteRepository stockNoteRepository,
             YahooFinancePriceService yahooFinancePriceService,
             @Value("${app.pricing.retry.max-attempts:3}") int retryMaxAttempts,
             @Value("${app.pricing.retry.backoff-ms:1000}") long retryBackoffMs,
@@ -78,6 +81,7 @@ public class PortfolioService {
         this.cashAdjustmentRepository = cashAdjustmentRepository;
         this.priceHistoryRepository = priceHistoryRepository;
         this.peHistoryRepository = peHistoryRepository;
+        this.stockNoteRepository = stockNoteRepository;
         this.yahooFinancePriceService = yahooFinancePriceService;
         this.retryMaxAttempts = Math.max(1, retryMaxAttempts);
         this.retryBackoffMs = Math.max(0, retryBackoffMs);
@@ -110,6 +114,7 @@ public class PortfolioService {
         transaction.setType(request.type());
         transaction.setQuantity(request.quantity().setScale(4, RoundingMode.HALF_UP));
         transaction.setPrice(request.price().setScale(4, RoundingMode.HALF_UP));
+        transaction.setNote(normalizeNote(request.note()));
         transaction.setExecutedAt(request.executedAt() == null ? OffsetDateTime.now() : request.executedAt());
 
         applyTransactionToPosition(transaction);
@@ -143,6 +148,7 @@ public class PortfolioService {
         transaction.setType(request.type());
         transaction.setQuantity(request.quantity().setScale(4, RoundingMode.HALF_UP));
         transaction.setPrice(request.price().setScale(4, RoundingMode.HALF_UP));
+        transaction.setNote(normalizeNote(request.note()));
         transaction.setExecutedAt(request.executedAt() == null ? OffsetDateTime.now() : request.executedAt());
 
         Transaction saved = transactionRepository.save(transaction);
@@ -223,6 +229,27 @@ public class PortfolioService {
                 .stream()
                 .map(this::toDividendResponse)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<StockNoteResponse> listStockNotes() {
+        return stockNoteRepository.findAllByOrderBySymbolAsc()
+                .stream()
+                .map(this::toStockNoteResponse)
+                .toList();
+    }
+
+    public StockNoteResponse upsertStockNote(String symbolRaw, StockNoteRequest request) {
+        String symbol = normalizeSymbol(symbolRaw);
+        String note = normalizeNote(request.note());
+
+        com.stockportfolio.model.StockNote stockNote = stockNoteRepository.findBySymbolIgnoreCase(symbol)
+                .orElseGet(com.stockportfolio.model.StockNote::new);
+        stockNote.setSymbol(symbol);
+        stockNote.setNote(note == null ? "" : note);
+
+        com.stockportfolio.model.StockNote saved = stockNoteRepository.save(stockNote);
+        return toStockNoteResponse(saved);
     }
 
     public CashAdjustmentResponse recordCashAdjustment(CashAdjustmentRequest request) {
@@ -938,10 +965,12 @@ public class PortfolioService {
                     BigDecimal quantity = new BigDecimal(cells[3].trim());
                     BigDecimal price = new BigDecimal(cells[4].trim());
 
+                    String note = cells.length >= 6 ? cells[5].trim() : null;
+
                     if (dryRun) {
                         validateAndApplyDryRunTransaction(simulatedHoldings, symbol, type, quantity);
                     } else {
-                        recordTransaction(new TransactionRequest(symbol, type, quantity, price, executedAt));
+                        recordTransaction(new TransactionRequest(symbol, type, quantity, price, note, executedAt));
                     }
                     importedRows++;
                 } catch (Exception e) {
@@ -1141,6 +1170,7 @@ public class PortfolioService {
                 transaction.getType(),
                 transaction.getQuantity(),
                 transaction.getPrice(),
+                transaction.getNote(),
                 transaction.getExecutedAt()
         );
     }
@@ -1166,11 +1196,27 @@ public class PortfolioService {
         );
     }
 
+    private StockNoteResponse toStockNoteResponse(com.stockportfolio.model.StockNote stockNote) {
+        return new StockNoteResponse(
+                stockNote.getSymbol(),
+                stockNote.getNote(),
+                stockNote.getUpdatedAt()
+        );
+    }
+
     private BigDecimal signedCashAdjustment(CashAdjustment adjustment) {
         if (adjustment.getType() == CashAdjustmentType.WITHDRAWAL) {
             return adjustment.getAmount().negate().setScale(4, RoundingMode.HALF_UP);
         }
         return adjustment.getAmount().setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private String normalizeNote(String note) {
+        if (note == null) {
+            return null;
+        }
+        String trimmed = note.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private record CsvImportAnalysis(

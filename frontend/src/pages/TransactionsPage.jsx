@@ -54,7 +54,7 @@ export default function TransactionsPage({
   const [sort, setSort] = useState(defaultSort);
   const [deletingId, setDeletingId] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ symbol: '', type: 'BUY', quantity: '', price: '', date: '' });
+  const [editForm, setEditForm] = useState({ symbol: '', type: 'BUY', quantity: '', price: '', note: '', date: '' });
 
   const sortedTransactions = useMemo(() => {
     return [...transactions].sort((a, b) => compareValues(a, b, sort));
@@ -102,13 +102,14 @@ export default function TransactionsPage({
       type: txn.type,
       quantity: String(txn.quantity),
       price: String(txn.price),
+      note: txn.note || '',
       date: toDateInput(txn.executedAt)
     });
   }
 
   function cancelEdit() {
     setEditingId(null);
-    setEditForm({ symbol: '', type: 'BUY', quantity: '', price: '', date: '' });
+    setEditForm({ symbol: '', type: 'BUY', quantity: '', price: '', note: '', date: '' });
   }
 
   async function saveEdit(txnId) {
@@ -118,6 +119,7 @@ export default function TransactionsPage({
       type: editForm.type,
       quantity: Number(editForm.quantity),
       price: Number(editForm.price),
+      note: editForm.note,
       executedAt
     });
     cancelEdit();
@@ -177,6 +179,12 @@ export default function TransactionsPage({
               onChange={(e) => setTransactionForm({ ...transactionForm, tradeDate: e.target.value })}
               required
             />
+            <textarea
+              rows={3}
+              placeholder="Transaction note (optional)"
+              value={transactionForm.note || ''}
+              onChange={(e) => setTransactionForm({ ...transactionForm, note: e.target.value })}
+            />
             <button type="submit">Record Transaction</button>
           </form>
         </article>
@@ -214,6 +222,7 @@ export default function TransactionsPage({
             ) : null}
           </div>
         </article>
+
       </section>
 
       <section className="panel">
@@ -228,6 +237,7 @@ export default function TransactionsPage({
                 <th role="button" tabIndex={0} onClick={() => toggleSort('quantity')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('quantity')}>Quantity{sortMark('quantity')}</th>
                 <th role="button" tabIndex={0} onClick={() => toggleSort('price')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('price')}>Price{sortMark('price')}</th>
                 <th role="button" tabIndex={0} onClick={() => toggleSort('totalCost')} onKeyDown={(e) => e.key === 'Enter' && toggleSort('totalCost')}>Total Cost{sortMark('totalCost')}</th>
+                <th>Note</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -247,6 +257,18 @@ export default function TransactionsPage({
                     <td>{editing ? <input type="number" min="1" step="1" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} /> : txn.quantity}</td>
                     <td>{editing ? <input type="number" min="0.0001" step="0.01" value={editForm.price} onChange={(e) => setEditForm({ ...editForm, price: e.target.value })} /> : `$${txn.price}`}</td>
                     <td>${(toNumber(editing ? editForm.quantity : txn.quantity) * toNumber(editing ? editForm.price : txn.price)).toFixed(4)}</td>
+                    <td>
+                      {editing ? (
+                        <textarea
+                          rows={2}
+                          className="table-note-input"
+                          value={editForm.note}
+                          onChange={(e) => setEditForm({ ...editForm, note: e.target.value })}
+                        />
+                      ) : (
+                        <span className="cell-note" title={txn.note || ''}>{txn.note?.trim() ? txn.note : '--'}</span>
+                      )}
+                    </td>
                     <td className="button-row">
                       {editing ? (
                         <>

@@ -25,6 +25,9 @@ public class Transaction {
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal price;
 
+    @Column(columnDefinition = "TEXT")
+    private String note;
+
     @Column(name = "executed_at", nullable = false)
     private OffsetDateTime executedAt;
 
@@ -73,6 +76,14 @@ public class Transaction {
 
     public void setPrice(BigDecimal price) {
         this.price = price;
+    }
+
+    public String getNote() {
+        return note;
+    }
+
+    public void setNote(String note) {
+        this.note = note;
     }
 
     public OffsetDateTime getExecutedAt() {
