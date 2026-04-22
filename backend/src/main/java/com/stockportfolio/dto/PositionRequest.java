@@ -1,13 +1,10 @@
 package com.stockportfolio.dto;
 
-import jakarta.validation.constraints.DecimalMin;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import java.math.BigDecimal;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record PositionRequest(
-        @NotBlank String symbol,
-        @NotNull @DecimalMin(value = "0.0001", inclusive = true) BigDecimal quantity,
-        @NotNull @DecimalMin(value = "0.0000", inclusive = true) BigDecimal averageCost
+        @NotBlank String symbol
 ) {
 }

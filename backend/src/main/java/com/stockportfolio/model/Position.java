@@ -15,26 +15,14 @@ public class Position {
     @Column(nullable = false, length = 20)
     private String symbol;
 
-    @Column(nullable = false, precision = 19, scale = 4)
-    private BigDecimal quantity;
-
-    @Column(name = "average_cost", nullable = false, precision = 19, scale = 4)
-    private BigDecimal averageCost;
-
     @Column(name = "latest_price", precision = 19, scale = 4)
     private BigDecimal latestPrice;
 
     @Column(name = "latest_pe", precision = 19, scale = 4)
     private BigDecimal latestPe;
 
-    @Column(name = "latest_peg", precision = 19, scale = 4)
-    private BigDecimal latestPeg;
-
     @Column(name = "price_updated_at")
     private OffsetDateTime priceUpdatedAt;
-
-    @Column(name = "pe_updated_at")
-    private OffsetDateTime peUpdatedAt;
 
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
@@ -61,22 +49,6 @@ public class Position {
         this.symbol = symbol;
     }
 
-    public BigDecimal getQuantity() {
-        return quantity;
-    }
-
-    public void setQuantity(BigDecimal quantity) {
-        this.quantity = quantity;
-    }
-
-    public BigDecimal getAverageCost() {
-        return averageCost;
-    }
-
-    public void setAverageCost(BigDecimal averageCost) {
-        this.averageCost = averageCost;
-    }
-
     public BigDecimal getLatestPrice() {
         return latestPrice;
     }
@@ -99,22 +71,6 @@ public class Position {
 
     public void setLatestPe(BigDecimal latestPe) {
         this.latestPe = latestPe;
-    }
-
-    public BigDecimal getLatestPeg() {
-        return latestPeg;
-    }
-
-    public void setLatestPeg(BigDecimal latestPeg) {
-        this.latestPeg = latestPeg;
-    }
-
-    public OffsetDateTime getPeUpdatedAt() {
-        return peUpdatedAt;
-    }
-
-    public void setPeUpdatedAt(OffsetDateTime peUpdatedAt) {
-        this.peUpdatedAt = peUpdatedAt;
     }
 
     public OffsetDateTime getUpdatedAt() {

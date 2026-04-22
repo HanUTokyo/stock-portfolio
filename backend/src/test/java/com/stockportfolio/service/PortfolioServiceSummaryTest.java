@@ -7,7 +7,7 @@ import com.stockportfolio.model.Transaction;
 import com.stockportfolio.model.TransactionType;
 import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.CashAdjustmentRepository;
-import com.stockportfolio.repository.PeHistoryRepository;
+import com.stockportfolio.repository.EarningsHistoryRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
 import com.stockportfolio.repository.StockNoteRepository;
@@ -38,7 +38,7 @@ class PortfolioServiceSummaryTest {
     @Mock
     private PriceHistoryRepository priceHistoryRepository;
     @Mock
-    private PeHistoryRepository peHistoryRepository;
+    private EarningsHistoryRepository earningsHistoryRepository;
     @Mock
     private StockNoteRepository stockNoteRepository;
 
@@ -46,7 +46,7 @@ class PortfolioServiceSummaryTest {
     void getSummary_shouldCalculateRealizedAndUnrealizedAcrossPartialSellAndRebuy() {
         PortfolioService service = createService();
 
-        Position aapl = position("AAPL", "5.0000", "102.5000", "140.0000");
+        Position aapl = position("AAPL", "140.0000");
         when(positionRepository.findAll()).thenReturn(List.of(aapl));
         when(transactionRepository.findAllByOrderByExecutedAtAscIdAsc()).thenReturn(List.of(
                 transaction("AAPL", TransactionType.BUY, "10.0000", "100.0000", "2025-01-01T00:00:00Z"),
@@ -68,11 +68,11 @@ class PortfolioServiceSummaryTest {
     }
 
     @Test
-    void getSummary_shouldIncludePositionWithoutTransactionHistoryForUnrealized() {
+    void getSummary_shouldIgnoreSymbolsWithoutTransactionHistory() {
         PortfolioService service = createService();
 
-        Position aapl = position("AAPL", "5.0000", "102.5000", "140.0000");
-        Position msft = position("MSFT", "2.0000", "50.0000", "55.0000");
+        Position aapl = position("AAPL", "140.0000");
+        Position msft = position("MSFT", "55.0000");
 
         when(positionRepository.findAll()).thenReturn(List.of(aapl, msft));
         when(transactionRepository.findAllByOrderByExecutedAtAscIdAsc()).thenReturn(List.of(
@@ -82,13 +82,13 @@ class PortfolioServiceSummaryTest {
 
         PortfolioSummaryResponse summary = service.getSummary();
 
-        assertEquals(2, summary.totalPositions());
-        assertEquals(2, summary.trackedSymbols());
-        assertEquals(2, summary.currentHoldings());
-        assertEquals(new BigDecimal("7.0000"), summary.totalUnits());
-        assertEquals(new BigDecimal("600.0000"), summary.totalCostBasis());
-        assertEquals(new BigDecimal("810.0000"), summary.totalMarketValue());
-        assertEquals(new BigDecimal("210.0000"), summary.totalUnrealizedPnl());
+        assertEquals(1, summary.totalPositions());
+        assertEquals(1, summary.trackedSymbols());
+        assertEquals(1, summary.currentHoldings());
+        assertEquals(new BigDecimal("5.0000"), summary.totalUnits());
+        assertEquals(new BigDecimal("500.0000"), summary.totalCostBasis());
+        assertEquals(new BigDecimal("700.0000"), summary.totalMarketValue());
+        assertEquals(new BigDecimal("200.0000"), summary.totalUnrealizedPnl());
         assertEquals(new BigDecimal("100.0000"), summary.totalRealizedGain());
     }
 
@@ -96,7 +96,7 @@ class PortfolioServiceSummaryTest {
     void getSummary_shouldFallbackToAverageCostWhenLatestPriceMissing() {
         PortfolioService service = createService();
 
-        Position nvda = position("NVDA", "8.0000", "15.0000", null);
+        Position nvda = position("NVDA", null);
 
         when(positionRepository.findAll()).thenReturn(List.of(nvda));
         when(transactionRepository.findAllByOrderByExecutedAtAscIdAsc()).thenReturn(List.of(
@@ -114,11 +114,9 @@ class PortfolioServiceSummaryTest {
         assertEquals(new BigDecimal("0.0000"), summary.totalRealizedGain());
     }
 
-    private static Position position(String symbol, String quantity, String averageCost, String latestPrice) {
+    private static Position position(String symbol, String latestPrice) {
         Position position = new Position();
         position.setSymbol(symbol);
-        position.setQuantity(new BigDecimal(quantity));
-        position.setAverageCost(new BigDecimal(averageCost));
         position.setLatestPrice(latestPrice == null ? null : new BigDecimal(latestPrice));
         return position;
     }
@@ -144,7 +142,7 @@ class PortfolioServiceSummaryTest {
                 dividendRepository,
                 cashAdjustmentRepository,
                 priceHistoryRepository,
-                peHistoryRepository,
+                earningsHistoryRepository,
                 stockNoteRepository,
                 new YahooFinancePriceService("https://query1.finance.yahoo.com", new ObjectMapper()),
                 3,

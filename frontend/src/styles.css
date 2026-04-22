@@ -475,7 +475,7 @@ tr:hover td {
 
 .allocation-bar-row {
   display: grid;
-  grid-template-columns: 180px 1fr 110px;
+  grid-template-columns: minmax(0, 260px) 1fr 110px;
   gap: 10px;
   align-items: center;
 }
@@ -484,6 +484,20 @@ tr:hover td {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.allocation-symbol {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.allocation-weight {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .allocation-track {

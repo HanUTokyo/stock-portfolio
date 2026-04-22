@@ -20,11 +20,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
 public class YahooFinancePriceService {
+    private static final Map<String, String> PRICING_SYMBOL_ALIASES = Map.of(
+            "BTC", "BTC-USD"
+    );
 
     private final String yahooBaseUrl;
     private final ObjectMapper objectMapper;
@@ -47,20 +52,21 @@ public class YahooFinancePriceService {
     }
 
     public Optional<YahooMarketSnapshot> fetchSnapshot(String symbol) {
+        String pricingSymbol = resolvePricingSymbol(symbol);
         BigDecimal price = null;
         OffsetDateTime marketTime = null;
         BigDecimal trailingPe = null;
         BigDecimal pegRatio = null;
 
         try {
-            JsonNode sparkMeta = fetchSparkMeta(symbol);
+            JsonNode sparkMeta = fetchSparkMeta(pricingSymbol);
             price = parseRegularMarketPrice(sparkMeta).orElse(null);
             marketTime = parseRegularMarketTime(sparkMeta).orElse(null);
         } catch (Exception ignored) {
         }
 
         try {
-            ValuationMetrics metrics = fetchValuationMetrics(symbol);
+            ValuationMetrics metrics = fetchValuationMetrics(pricingSymbol);
             trailingPe = metrics.trailingPe();
             pegRatio = metrics.pegRatio();
         } catch (Exception ignored) {
@@ -79,7 +85,7 @@ public class YahooFinancePriceService {
             return List.of();
         }
 
-        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        String encodedSymbol = URLEncoder.encode(resolvePricingSymbol(symbol), StandardCharsets.UTF_8);
         long period1 = from.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
         long period2 = to.plusDays(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond();
         String url = yahooBaseUrl + "/v8/finance/chart/" + encodedSymbol
@@ -117,23 +123,24 @@ public class YahooFinancePriceService {
         return points;
     }
 
-    public List<QuarterlyEpsPoint> fetchQuarterlyBasicEpsHistory(String symbol, LocalDate from, LocalDate to)
+    public List<QuarterlyEpsPoint> fetchTrailingBasicEpsHistory(String symbol, LocalDate from, LocalDate to)
             throws IOException, InterruptedException {
         if (to.isBefore(from)) {
             return List.of();
         }
 
-        String encodedSymbol = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        String encodedSymbol = URLEncoder.encode(resolvePricingSymbol(symbol), StandardCharsets.UTF_8);
         long period1 = from.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
         long period2 = to.plusDays(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond();
         String url = yahooBaseUrl + "/ws/fundamentals-timeseries/v1/finance/timeseries/" + encodedSymbol
-                + "?type=quarterlyBasicEPS"
+                + "?type=trailingBasicEPS"
                 + "&period1=" + period1
                 + "&period2=" + period2;
 
         JsonNode root = readJson(url);
         JsonNode result = root.path("timeseries").path("result").path(0);
-        JsonNode epsArray = result.path("quarterlyBasicEPS");
+        JsonNode epsArray = result.path("trailingBasicEPS");
+        String defaultCurrencyCode = result.path("meta").path("currencyCode").asText("");
 
         if (!epsArray.isArray()) {
             return List.of();
@@ -143,6 +150,7 @@ public class YahooFinancePriceService {
         for (JsonNode item : epsArray) {
             String asOfDateRaw = item.path("asOfDate").asText("");
             JsonNode rawNode = item.path("reportedValue").path("raw");
+            String currencyCode = item.path("currencyCode").asText("");
             if (asOfDateRaw.isBlank() || rawNode.isMissingNode() || rawNode.isNull()) {
                 continue;
             }
@@ -152,9 +160,47 @@ public class YahooFinancePriceService {
                 continue;
             }
 
-            points.add(new QuarterlyEpsPoint(asOfDate, rawNode.decimalValue()));
+            String normalizedCurrencyCode = currencyCode.isBlank() ? defaultCurrencyCode : currencyCode;
+            points.add(new QuarterlyEpsPoint(
+                    asOfDate,
+                    rawNode.decimalValue(),
+                    normalizedCurrencyCode == null || normalizedCurrencyCode.isBlank() ? null : normalizedCurrencyCode
+            ));
         }
         return points;
+    }
+
+    public Optional<BigDecimal> fetchFxRate(String baseCurrency, String quoteCurrency)
+            throws IOException, InterruptedException {
+        if (baseCurrency == null || quoteCurrency == null || baseCurrency.isBlank() || quoteCurrency.isBlank()) {
+            return Optional.empty();
+        }
+        if (baseCurrency.equalsIgnoreCase(quoteCurrency)) {
+            return Optional.of(BigDecimal.ONE);
+        }
+
+        String direct = (baseCurrency + quoteCurrency + "=X").toUpperCase();
+        Optional<BigDecimal> directRate = fetchLatestCloseForSymbol(direct);
+        if (directRate.isPresent()) {
+            return directRate;
+        }
+
+        String reverse = (quoteCurrency + baseCurrency + "=X").toUpperCase();
+        Optional<BigDecimal> reverseRate = fetchLatestCloseForSymbol(reverse);
+        if (reverseRate.isPresent() && reverseRate.get().compareTo(BigDecimal.ZERO) > 0) {
+            return Optional.of(BigDecimal.ONE.divide(reverseRate.get(), 8, java.math.RoundingMode.HALF_UP));
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<BigDecimal> fetchLatestCloseForSymbol(String symbol) throws IOException, InterruptedException {
+        LocalDate to = LocalDate.now(ZoneOffset.UTC);
+        LocalDate from = to.minusDays(14);
+        List<YahooDailyPricePoint> points = fetchDailyCloseHistory(symbol, from, to);
+        return points.stream()
+                .max(Comparator.comparing(YahooDailyPricePoint::tradeDate))
+                .map(YahooDailyPricePoint::closePrice);
     }
 
     private Optional<BigDecimal> parseRegularMarketPrice(JsonNode meta) {
@@ -230,6 +276,14 @@ public class YahooFinancePriceService {
                 .path("meta");
     }
 
+    private String resolvePricingSymbol(String symbol) {
+        if (symbol == null) {
+            return null;
+        }
+        String normalized = symbol.trim().toUpperCase();
+        return PRICING_SYMBOL_ALIASES.getOrDefault(normalized, normalized);
+    }
+
     private String ensureCrumb() throws IOException, InterruptedException {
         if (crumb != null && !crumb.isBlank()) {
             return crumb;
@@ -285,7 +339,8 @@ public class YahooFinancePriceService {
 
     public record QuarterlyEpsPoint(
             LocalDate asOfDate,
-            BigDecimal eps
+            BigDecimal eps,
+            String currencyCode
     ) {
     }
 

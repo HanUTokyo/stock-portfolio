@@ -418,8 +418,8 @@ export default function OverviewPage({
             <div key={item.symbol} className="allocation-bar-row">
               <div className="allocation-meta">
                 <span className="legend-dot" style={{ background: `var(--palette-${(index % 10) + 1})` }} />
-                <strong>{item.symbol}</strong>
-                <span className="muted">{item.weight.toFixed(2)}%</span>
+                <strong className="allocation-symbol" title={item.symbol}>{item.symbol}</strong>
+                <span className="muted allocation-weight">{item.weight.toFixed(2)}%</span>
               </div>
               <div className="allocation-track">
                 <div

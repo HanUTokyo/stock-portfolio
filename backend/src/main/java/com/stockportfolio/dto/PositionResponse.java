@@ -6,13 +6,9 @@ import java.time.OffsetDateTime;
 public record PositionResponse(
         Long id,
         String symbol,
-        BigDecimal quantity,
-        BigDecimal averageCost,
         BigDecimal latestPrice,
         BigDecimal latestPe,
-        BigDecimal latestPeg,
         OffsetDateTime priceUpdatedAt,
-        OffsetDateTime peUpdatedAt,
         OffsetDateTime updatedAt
 ) {
 }
