@@ -8,6 +8,7 @@ import com.stockportfolio.model.TransactionType;
 import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.CashAdjustmentRepository;
 import com.stockportfolio.repository.EarningsHistoryRepository;
+import com.stockportfolio.repository.OverviewNoteRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
 import com.stockportfolio.repository.StockNoteRepository;
@@ -41,6 +42,8 @@ class PortfolioServiceSummaryTest {
     private EarningsHistoryRepository earningsHistoryRepository;
     @Mock
     private StockNoteRepository stockNoteRepository;
+    @Mock
+    private OverviewNoteRepository overviewNoteRepository;
 
     @Test
     void getSummary_shouldCalculateRealizedAndUnrealizedAcrossPartialSellAndRebuy() {
@@ -144,6 +147,7 @@ class PortfolioServiceSummaryTest {
                 priceHistoryRepository,
                 earningsHistoryRepository,
                 stockNoteRepository,
+                overviewNoteRepository,
                 new YahooFinancePriceService("https://query1.finance.yahoo.com", new ObjectMapper()),
                 3,
                 0,

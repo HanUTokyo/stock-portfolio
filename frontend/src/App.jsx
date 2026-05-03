@@ -5,10 +5,12 @@ import {
   createDividend,
   downloadCsvImportErrors,
   deleteTransaction,
+  exportPortfolioJson,
   getDividends,
   getAssetCurve,
   getHoldings,
   getMonthlyDividends,
+  getOverviewNotes,
   getPeHistory,
   getPriceHistory,
   getStockNotes,
@@ -19,6 +21,7 @@ import {
   recordTransaction,
   refreshPrices,
   syncMarketClose,
+  updateOverviewNote,
   updateStockNote,
   updateTransaction
 } from './api';
@@ -63,6 +66,7 @@ export default function App() {
   const [summary, setSummary] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [stockNotes, setStockNotes] = useState([]);
+  const [overviewNotes, setOverviewNotes] = useState([]);
   const [dividends, setDividends] = useState([]);
   const [monthlyDividends, setMonthlyDividends] = useState([]);
   const [assetCurve, setAssetCurve] = useState([]);
@@ -88,14 +92,15 @@ export default function App() {
     setError('');
 
     try {
-      const [holdingsData, summaryData, transactionsData, assetCurveData, dividendsData, monthlyDividendsData, stockNotesData] = await Promise.all([
+      const [holdingsData, summaryData, transactionsData, assetCurveData, dividendsData, monthlyDividendsData, stockNotesData, overviewNotesData] = await Promise.all([
         getHoldings(),
         getSummary(),
         getTransactions(),
         getAssetCurve(),
         getDividends(),
         getMonthlyDividends(),
-        getStockNotes()
+        getStockNotes(),
+        getOverviewNotes()
       ]);
 
       setHoldings(holdingsData);
@@ -105,6 +110,7 @@ export default function App() {
       setDividends(dividendsData);
       setMonthlyDividends(monthlyDividendsData);
       setStockNotes(stockNotesData);
+      setOverviewNotes(overviewNotesData);
 
     } catch (e) {
       setError(e.message);
@@ -267,6 +273,42 @@ export default function App() {
     }
   }
 
+  async function handleSaveOverviewNote(noteType, note) {
+    setError('');
+    setActionResult('');
+    try {
+      const saved = await updateOverviewNote(noteType, { note });
+      setOverviewNotes((prev) => {
+        const next = prev.filter((item) => item.noteType !== saved.noteType);
+        next.push(saved);
+        return next.sort((a, b) => a.noteType.localeCompare(b.noteType));
+      });
+      setActionResult(saved.noteType === 'AI' ? 'Saved AI note.' : 'Saved trading idea note.');
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    }
+  }
+
+  async function handleExportPortfolioJson() {
+    setError('');
+    setActionResult('');
+    try {
+      const payload = await exportPortfolioJson();
+      const date = String(payload.generatedAt || new Date().toISOString()).slice(0, 10);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `portfolio-export-${date}.json`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      setActionResult('Portfolio JSON exported.');
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function handleCashAdjustment(type) {
     const amount = Number(cashAdjustmentForm.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -373,10 +415,13 @@ export default function App() {
               assetCurve={assetCurve}
               holdings={holdings}
               dividends={dividends}
+              overviewNotes={overviewNotes}
               transactions={transactions}
               cashAdjustmentForm={cashAdjustmentForm}
               setCashAdjustmentForm={setCashAdjustmentForm}
               onSubmitCashAdjustment={handleCashAdjustment}
+              onSaveOverviewNote={handleSaveOverviewNote}
+              onExportPortfolioJson={handleExportPortfolioJson}
             />
           }
         />

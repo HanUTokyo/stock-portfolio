@@ -67,12 +67,27 @@ export function updateStockNote(symbol, payload) {
   });
 }
 
+export function getOverviewNotes() {
+  return request('/overview-notes');
+}
+
+export function updateOverviewNote(noteType, payload) {
+  return request(`/overview-notes/${encodeURIComponent(noteType)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getHoldings() {
   return request('/portfolio/holdings');
 }
 
 export function getSummary() {
   return request('/portfolio/summary');
+}
+
+export function exportPortfolioJson() {
+  return request('/portfolio/export');
 }
 
 export function getAssetCurve() {

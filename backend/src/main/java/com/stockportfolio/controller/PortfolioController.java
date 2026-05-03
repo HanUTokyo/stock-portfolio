@@ -8,6 +8,7 @@ import com.stockportfolio.dto.PriceHistoryBackfillResponse;
 import com.stockportfolio.dto.PriceHistoryPointResponse;
 import com.stockportfolio.dto.PriceRefreshResponse;
 import com.stockportfolio.dto.PortfolioSummaryResponse;
+import com.stockportfolio.dto.PortfolioExportResponse;
 import com.stockportfolio.service.PortfolioService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -36,6 +37,11 @@ public class PortfolioController {
     @GetMapping("/summary")
     public PortfolioSummaryResponse summary() {
         return portfolioService.getSummary();
+    }
+
+    @GetMapping("/export")
+    public PortfolioExportResponse export() {
+        return portfolioService.exportPortfolio();
     }
 
     @GetMapping("/asset-curve")

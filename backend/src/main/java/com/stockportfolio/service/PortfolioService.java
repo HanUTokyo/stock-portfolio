@@ -5,6 +5,8 @@ import com.stockportfolio.model.CashAdjustment;
 import com.stockportfolio.model.CashAdjustmentType;
 import com.stockportfolio.model.Dividend;
 import com.stockportfolio.model.EarningsHistory;
+import com.stockportfolio.model.OverviewNote;
+import com.stockportfolio.model.OverviewNoteType;
 import com.stockportfolio.model.Position;
 import com.stockportfolio.model.PriceHistory;
 import com.stockportfolio.model.Transaction;
@@ -12,6 +14,7 @@ import com.stockportfolio.model.TransactionType;
 import com.stockportfolio.repository.CashAdjustmentRepository;
 import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.EarningsHistoryRepository;
+import com.stockportfolio.repository.OverviewNoteRepository;
 import com.stockportfolio.repository.PositionRepository;
 import com.stockportfolio.repository.PriceHistoryRepository;
 import com.stockportfolio.repository.StockNoteRepository;
@@ -59,6 +62,7 @@ public class PortfolioService {
     private final PriceHistoryRepository priceHistoryRepository;
     private final EarningsHistoryRepository earningsHistoryRepository;
     private final StockNoteRepository stockNoteRepository;
+    private final OverviewNoteRepository overviewNoteRepository;
     private final YahooFinancePriceService yahooFinancePriceService;
     private final int retryMaxAttempts;
     private final long retryBackoffMs;
@@ -72,6 +76,7 @@ public class PortfolioService {
             PriceHistoryRepository priceHistoryRepository,
             EarningsHistoryRepository earningsHistoryRepository,
             StockNoteRepository stockNoteRepository,
+            OverviewNoteRepository overviewNoteRepository,
             YahooFinancePriceService yahooFinancePriceService,
             @Value("${app.pricing.retry.max-attempts:3}") int retryMaxAttempts,
             @Value("${app.pricing.retry.backoff-ms:1000}") long retryBackoffMs,
@@ -84,6 +89,7 @@ public class PortfolioService {
         this.priceHistoryRepository = priceHistoryRepository;
         this.earningsHistoryRepository = earningsHistoryRepository;
         this.stockNoteRepository = stockNoteRepository;
+        this.overviewNoteRepository = overviewNoteRepository;
         this.yahooFinancePriceService = yahooFinancePriceService;
         this.retryMaxAttempts = Math.max(1, retryMaxAttempts);
         this.retryBackoffMs = Math.max(0, retryBackoffMs);
@@ -269,6 +275,29 @@ public class PortfolioService {
         return toStockNoteResponse(saved);
     }
 
+    @Transactional(readOnly = true)
+    public List<OverviewNoteResponse> listOverviewNotes() {
+        return overviewNoteRepository.findAllByOrderByNoteTypeAsc()
+                .stream()
+                .map(this::toOverviewNoteResponse)
+                .toList();
+    }
+
+    public OverviewNoteResponse upsertOverviewNote(OverviewNoteType noteType, OverviewNoteRequest request) {
+        if (noteType == null) {
+            throw new ResponseStatusException(BAD_REQUEST, "noteType is required");
+        }
+        String note = normalizeNote(request.note());
+
+        OverviewNote overviewNote = overviewNoteRepository.findByNoteType(noteType)
+                .orElseGet(OverviewNote::new);
+        overviewNote.setNoteType(noteType);
+        overviewNote.setNote(note == null ? "" : note);
+
+        OverviewNote saved = overviewNoteRepository.save(overviewNote);
+        return toOverviewNoteResponse(saved);
+    }
+
     public CashAdjustmentResponse recordCashAdjustment(CashAdjustmentRequest request) {
         CashAdjustment adjustment = new CashAdjustment();
         adjustment.setType(request.type());
@@ -393,6 +422,83 @@ public class PortfolioService {
                 metrics.totalMarketValue(),
                 metrics.totalUnrealizedPnl(),
                 metrics.totalRealizedGain()
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public PortfolioExportResponse exportPortfolio() {
+        List<Transaction> transactions = transactionRepository.findAllByOrderByExecutedAtAscIdAsc();
+        java.util.Map<String, Position> cacheBySymbol = positionRepository.findAll().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        Position::getSymbol,
+                        p -> p,
+                        (left, right) -> left
+                ));
+        java.util.Map<String, BigDecimal> dividendBySymbol = dividendRepository.findAllByOrderByPaidDateAscIdAsc()
+                .stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        Dividend::getSymbol,
+                        java.util.stream.Collectors.reducing(
+                                BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP),
+                                Dividend::getAmount,
+                                (left, right) -> left.add(right).setScale(4, RoundingMode.HALF_UP)
+                        )
+                ));
+        java.util.Map<String, String> noteBySymbol = stockNoteRepository.findAllByOrderBySymbolAsc()
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        com.stockportfolio.model.StockNote::getSymbol,
+                        com.stockportfolio.model.StockNote::getNote,
+                        (left, right) -> left
+                ));
+
+        PortfolioMetrics metrics = calculatePortfolioMetrics(cacheBySymbol, transactions);
+        BigDecimal totalAssets = getAssetCurve().stream()
+                .reduce((first, second) -> second)
+                .map(AssetCurvePointResponse::totalAssets)
+                .orElse(metrics.totalMarketValue())
+                .setScale(4, RoundingMode.HALF_UP);
+        BigDecimal totalMarketValue = metrics.totalMarketValue();
+
+        List<PortfolioExportHoldingResponse> holdings = buildPositionSnapshots(transactions).entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().quantity.compareTo(BigDecimal.ZERO) > 0)
+                .sorted(java.util.Map.Entry.comparingByKey())
+                .map(entry -> {
+                    String symbol = entry.getKey();
+                    PositionSnapshot snapshot = entry.getValue();
+                    Position position = cacheBySymbol.get(symbol);
+                    BigDecimal latestPrice = position == null ? null : position.getLatestPrice();
+                    BigDecimal latestPe = position == null ? null : position.getLatestPe();
+                    BigDecimal marketPrice = latestPrice == null ? snapshot.averageCost : latestPrice;
+                    BigDecimal costBasis = snapshot.costBasis();
+                    BigDecimal marketValue = snapshot.quantity.multiply(marketPrice).setScale(4, RoundingMode.HALF_UP);
+                    BigDecimal unrealizedPnl = marketValue.subtract(costBasis).setScale(4, RoundingMode.HALF_UP);
+                    BigDecimal dividendIncome = dividendBySymbol
+                            .getOrDefault(symbol, BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP))
+                            .setScale(4, RoundingMode.HALF_UP);
+
+                    return new PortfolioExportHoldingResponse(
+                            symbol,
+                            snapshot.quantity.setScale(4, RoundingMode.HALF_UP),
+                            latestPrice == null ? null : latestPrice.setScale(4, RoundingMode.HALF_UP),
+                            marketValue,
+                            percent(marketValue, totalMarketValue),
+                            unrealizedPnl,
+                            percent(unrealizedPnl, costBasis),
+                            latestPe == null ? null : latestPe.setScale(4, RoundingMode.HALF_UP),
+                            dividendIncome,
+                            percent(dividendIncome, costBasis),
+                            noteBySymbol.getOrDefault(symbol, "")
+                    );
+                })
+                .toList();
+
+        return new PortfolioExportResponse(
+                OffsetDateTime.now(),
+                "USD",
+                new PortfolioExportSummaryResponse(totalAssets, totalMarketValue, metrics.totalCostBasis()),
+                holdings
         );
     }
 
@@ -1286,11 +1392,28 @@ public class PortfolioService {
         );
     }
 
+    private OverviewNoteResponse toOverviewNoteResponse(OverviewNote overviewNote) {
+        return new OverviewNoteResponse(
+                overviewNote.getNoteType(),
+                overviewNote.getNote(),
+                overviewNote.getUpdatedAt()
+        );
+    }
+
     private BigDecimal signedCashAdjustment(CashAdjustment adjustment) {
         if (adjustment.getType() == CashAdjustmentType.WITHDRAWAL) {
             return adjustment.getAmount().negate().setScale(4, RoundingMode.HALF_UP);
         }
         return adjustment.getAmount().setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal percent(BigDecimal numerator, BigDecimal denominator) {
+        if (numerator == null || denominator == null || denominator.compareTo(BigDecimal.ZERO) == 0) {
+            return BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        }
+        return numerator
+                .multiply(new BigDecimal("100"))
+                .divide(denominator, 4, RoundingMode.HALF_UP);
     }
 
     private String normalizeNote(String note) {

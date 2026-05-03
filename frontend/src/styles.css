@@ -147,6 +147,63 @@ body[data-theme='light'] {
   margin-bottom: 14px;
 }
 
+.overview-notes-panel {
+  margin-bottom: 14px;
+}
+
+.overview-notes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.overview-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.overview-panel-header h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.overview-export-button {
+  width: auto;
+  min-width: 112px;
+  padding: 9px 14px;
+}
+
+.overview-note-column {
+  min-width: 0;
+}
+
+.overview-note-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.overview-note-header h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.overview-note-save {
+  width: auto;
+  min-width: 78px;
+  padding: 8px 12px;
+}
+
+.overview-note-textarea {
+  min-height: 150px;
+  line-height: 1.45;
+}
+
 .kpi-card p {
   margin: 0;
   color: var(--muted);
@@ -217,6 +274,11 @@ button {
   font-weight: 700;
   cursor: pointer;
   color: #edf4ff;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 button:hover {
@@ -834,6 +896,19 @@ body[data-theme='light'] .chart-line-cost-basis {
   .history-controls,
   .cash-actions {
     grid-template-columns: 1fr;
+  }
+
+  .overview-notes-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .overview-export-button {
+    width: 100%;
   }
 
   .asset-chart {

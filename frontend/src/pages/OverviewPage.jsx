@@ -186,15 +186,94 @@ function onCardKeyDown(event, onEnter) {
   }
 }
 
+const overviewNoteColumns = [
+  { noteType: 'USER', title: 'Monthly Ideas' },
+  { noteType: 'AI', title: 'AI Suggestions' }
+];
+
+function buildOverviewNoteMap(overviewNotes) {
+  return (overviewNotes || []).reduce((acc, item) => {
+    acc[item.noteType] = item;
+    return acc;
+  }, {});
+}
+
+function OverviewNotesPanel({ overviewNotes, onSaveOverviewNote, onExportPortfolioJson }) {
+  const noteMap = useMemo(() => buildOverviewNoteMap(overviewNotes), [overviewNotes]);
+  const [drafts, setDrafts] = useState({ USER: '', AI: '' });
+  const [savingType, setSavingType] = useState('');
+
+  useEffect(() => {
+    setDrafts({
+      USER: noteMap.USER?.note || '',
+      AI: noteMap.AI?.note || ''
+    });
+  }, [noteMap]);
+
+  async function handleSave(noteType) {
+    setSavingType(noteType);
+    try {
+      await onSaveOverviewNote(noteType, drafts[noteType] || '');
+    } finally {
+      setSavingType('');
+    }
+  }
+
+  return (
+    <section className="panel overview-notes-panel">
+      <div className="overview-panel-header">
+        <h2>Portfolio Notes</h2>
+        <button type="button" className="overview-export-button" onClick={onExportPortfolioJson}>
+          Export Portfolio JSON
+        </button>
+      </div>
+      <div className="overview-notes-grid">
+        {overviewNoteColumns.map((column) => {
+          const savedNote = noteMap[column.noteType];
+          const isDirty = (drafts[column.noteType] || '') !== (savedNote?.note || '');
+          const isSaving = savingType === column.noteType;
+          return (
+            <article key={column.noteType} className="overview-note-column">
+              <div className="overview-note-header">
+                <h2>{column.title}</h2>
+                <button
+                  type="button"
+                  className="overview-note-save"
+                  disabled={isSaving || !isDirty}
+                  onClick={() => handleSave(column.noteType)}
+                >
+                  {isSaving ? 'Saving' : 'Save'}
+                </button>
+              </div>
+              <textarea
+                className="overview-note-textarea"
+                value={drafts[column.noteType] || ''}
+                onChange={(event) => setDrafts((prev) => ({ ...prev, [column.noteType]: event.target.value }))}
+                placeholder={column.noteType === 'AI' ? 'Paste AI suggestions here...' : 'Write trading ideas here...'}
+              />
+              <p className="chart-caption">
+                Last saved: {savedNote?.updatedAt ? new Date(savedNote.updatedAt).toLocaleString() : 'never'}
+              </p>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default function OverviewPage({
   summary,
   assetCurve,
   holdings,
   dividends,
+  overviewNotes,
   transactions,
   cashAdjustmentForm,
   setCashAdjustmentForm,
-  onSubmitCashAdjustment
+  onSubmitCashAdjustment,
+  onSaveOverviewNote,
+  onExportPortfolioJson
 }) {
   const assetChart = buildAssetChart(assetCurve);
   const latestAssetPoint = useMemo(() => {
@@ -264,6 +343,12 @@ export default function OverviewPage({
 
   return (
     <>
+      <OverviewNotesPanel
+        overviewNotes={overviewNotes}
+        onSaveOverviewNote={onSaveOverviewNote}
+        onExportPortfolioJson={onExportPortfolioJson}
+      />
+
       <section className="kpi-grid">
         <article className="kpi-card">
           <p>Total Assets</p>
