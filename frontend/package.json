@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "test": "npm run test:utils && npm run test:components",
-    "test:utils": "node --test \"src/**/*.test.js\"",
+    "test:utils": "node --test src/utils/*.test.js",
     "test:components": "vitest run",
     "preview": "vite preview"
   },
