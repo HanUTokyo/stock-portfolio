@@ -5,7 +5,7 @@ spring:
     password: ${DB_PASSWORD:stock_password}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:update}
     open-in-view: false
     properties:
       hibernate:
@@ -22,6 +22,11 @@ logging:
     org.hibernate.SQL: warn
 
 app:
+  cors:
+    allowed-origin-patterns: ${APP_CORS_ALLOWED_ORIGIN_PATTERNS:*}
+  auth:
+    enabled: ${APP_AUTH_ENABLED:false}
+    token: ${APP_API_TOKEN:}
   pricing:
     timezone: ${PRICING_TIMEZONE:America/New_York}
     open-cron: ${PRICING_OPEN_CRON:0 35 9 * * MON-FRI}
@@ -30,3 +35,13 @@ app:
     retry:
       max-attempts: ${PRICING_RETRY_MAX_ATTEMPTS:3}
       backoff-ms: ${PRICING_RETRY_BACKOFF_MS:1000}
+  fundamentals:
+    backfill-missing-enabled: ${FUNDAMENTALS_BACKFILL_MISSING_ENABLED:true}
+    backfill-missing-cron: ${FUNDAMENTALS_BACKFILL_MISSING_CRON:0 30 3 * * *}
+    backfill-missing-years: ${FUNDAMENTALS_BACKFILL_MISSING_YEARS:15}
+  economic-data:
+    cpi-csv-url: ${FRED_CPI_CSV_URL:https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL}
+    cpi-cron: ${FRED_CPI_CRON:0 15 4 * * *}
+  valuation:
+    engine-version: ${VALUATION_ENGINE_VERSION:valuation-java-2.0.0}
+    equity-risk-premium: ${VALUATION_EQUITY_RISK_PREMIUM:5.0}

@@ -14,6 +14,10 @@ public class Dividend {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(nullable = false)
+    private Long version;
+
     @Column(nullable = false, length = 20)
     private String symbol;
 
@@ -40,6 +44,9 @@ public class Dividend {
     public void setId(Long id) {
         this.id = id;
     }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 
     public String getSymbol() {
         return symbol;

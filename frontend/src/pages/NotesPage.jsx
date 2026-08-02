@@ -1,22 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
+import { FileText, Search } from 'lucide-react';
+import RowDetailSheet from '../components/RowDetailSheet';
+import RichTextEditor, { RichTextActions, RichTextPreview, richNoteToMarkdown, richNoteToPlainText } from '../components/RichTextEditor';
+import useIsMobile from '../hooks/useIsMobile';
 
 function normalizeSymbol(value) {
   return String(value || '').trim().toUpperCase();
 }
 
 function shortText(value, max = 80) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const text = richNoteToPlainText(value).replace(/\s+/g, ' ').trim();
   if (!text) return '--';
   if (text.length <= max) return text;
   return `${text.slice(0, max)}...`;
 }
 
 export default function NotesPage({ transactions, holdings, stockNotes, onSaveStockNote }) {
+  const isMobile = useIsMobile();
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [draftNote, setDraftNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [viewMode, setViewMode] = useState('ALL');
+  const [noteSheetOpen, setNoteSheetOpen] = useState(false);
 
   const notesBySymbol = useMemo(() => {
     return (stockNotes || []).reduce((acc, item) => {
@@ -86,6 +93,8 @@ export default function NotesPage({ transactions, holdings, stockNotes, onSaveSt
   const selectedNote = notesBySymbol[selectedSymbol];
   const savedNote = selectedNote?.note || '';
   const isDirty = draftNote !== savedNote;
+  const savedNoteCount = noteRows.filter((row) => row.hasNote).length;
+  const currentHoldingCount = noteRows.filter((row) => row.isCurrent).length;
 
   useEffect(() => {
     if (!allSymbols.length) {
@@ -109,137 +118,141 @@ export default function NotesPage({ transactions, holdings, stockNotes, onSaveSt
     if (!selectedSymbol) return;
     setSaving(true);
     try {
-      await onSaveStockNote(selectedSymbol, draftNote);
+      await onSaveStockNote(selectedSymbol, richNoteToMarkdown(draftNote));
+      setIsEditing(false);
+      if (isMobile) setNoteSheetOpen(false);
     } finally {
       setSaving(false);
     }
   }
 
+  function openNote(symbol) {
+    setSelectedSymbol(symbol);
+    setIsEditing(false);
+    if (isMobile) {
+      setNoteSheetOpen(true);
+    }
+  }
+
+  const editorFields = (
+    <div className="notes-editor-fields">
+      {isMobile ? (
+        <label className="notes-symbol-control">
+          <span>Symbol</span>
+          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} disabled={!allSymbols.length}>
+            {!allSymbols.length ? <option value="">No Symbol</option> : null}
+            {allSymbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}
+          </select>
+        </label>
+      ) : null}
+      <div className="notes-editor-copy">
+        <span>Research note</span>
+        {isEditing ? (
+          <RichTextEditor
+            placeholder="Thesis, catalysts, risk controls, position changes, and follow-up questions..."
+            ariaLabel="Research note"
+            value={draftNote}
+            onChange={setDraftNote}
+            autoFocus
+          />
+        ) : (
+          <RichTextPreview value={savedNote} className="notes-read-preview" ariaLabel="Research note preview" />
+        )}
+      </div>
+      {selectedSymbol ? (
+        <p className={`notes-save-state ${isDirty ? 'is-dirty' : ''}`}>
+          {isDirty ? 'Unsaved changes' : 'Saved'}
+          <span>Last updated {selectedNote?.updatedAt ? new Date(selectedNote.updatedAt).toLocaleString() : 'never'}</span>
+        </p>
+      ) : <p className="muted">Add a transaction before creating a stock note.</p>}
+    </div>
+  );
+
+  const editorActions = (
+    <RichTextActions
+      isEditing={isEditing}
+      isDirty={isDirty}
+      saving={saving}
+      disabled={!selectedSymbol}
+      editLabel="Edit note"
+      onEdit={() => setIsEditing(true)}
+      onCancel={() => { setDraftNote(savedNote); setIsEditing(false); }}
+      onSave={handleSave}
+    />
+  );
+
   return (
     <>
-      <section className="panel-grid">
-        <article className="panel">
-          <h2>Stock Notes</h2>
-          <div className="stack-form">
-            <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} disabled={!allSymbols.length}>
-              {!allSymbols.length ? <option value="">No Symbol</option> : null}
-              {allSymbols.map((symbol) => (
-                <option key={symbol} value={symbol}>{symbol}</option>
-              ))}
-            </select>
-
-            <textarea
-              rows={12}
-              placeholder="Write your trading plan / risk controls / thesis updates..."
-              value={draftNote}
-              onChange={(e) => setDraftNote(e.target.value)}
-              disabled={!selectedSymbol}
-            />
-
-            <div className="button-row">
-              <button type="button" onClick={handleSave} disabled={!selectedSymbol || saving || !isDirty}>
-                {saving ? 'Saving...' : 'Save Note'}
-              </button>
-              <button type="button" className="row-secondary-btn" onClick={() => setDraftNote(savedNote)} disabled={!selectedSymbol || !isDirty || saving}>
-                Revert
-              </button>
+      <section className="notes-workspace">
+        <article className="panel notes-directory-panel">
+          <header className="notes-directory-header">
+            <div>
+              <p className="eyebrow">Research workspace</p>
+              <h2>Stock Notes</h2>
             </div>
+            <div className="notes-summary-stats" aria-label="Notes summary">
+              <span><strong>{savedNoteCount}</strong> saved</span>
+              <span><strong>{currentHoldingCount}</strong> current</span>
+            </div>
+          </header>
 
-            {selectedSymbol ? (
-              <p className="muted">
-                Status: {isDirty ? 'Unsaved changes' : 'Saved'} | Last updated: {selectedNote?.updatedAt ? new Date(selectedNote.updatedAt).toLocaleString() : '--'}
-              </p>
-            ) : (
-              <p className="muted">No historical symbols yet. Add transactions first.</p>
-            )}
+          <div className="notes-directory-controls mobile-hide">
+            <label className="notes-search-control">
+              <Search size={16} aria-hidden="true" />
+              <input placeholder="Search symbols" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
+            </label>
+            <div className="rank-filter-tabs notes-inline-tabs">
+              <button type="button" className={viewMode === 'ALL' ? 'rank-tab active' : 'rank-tab'} onClick={() => setViewMode('ALL')}>All {noteRows.length}</button>
+              <button type="button" className={viewMode === 'WITH_NOTE' ? 'rank-tab active' : 'rank-tab'} onClick={() => setViewMode('WITH_NOTE')}>Saved {savedNoteCount}</button>
+            </div>
+          </div>
+
+          <div className="notes-directory-list">
+            {filteredRows.map((row) => (
+              <button
+                key={row.symbol}
+                type="button"
+                className={`notes-directory-item ${row.symbol === selectedSymbol ? 'is-active' : ''}`}
+                onClick={() => openNote(row.symbol)}
+              >
+                <span className="notes-directory-item-head">
+                  <strong>{row.symbol}</strong>
+                  <span className={`notes-holding-badge ${row.isCurrent ? 'is-current' : ''}`}>{row.isCurrent ? 'Current' : 'Past'}</span>
+                </span>
+                <span className={`notes-directory-preview ${row.hasNote ? '' : 'is-empty'}`}>{row.hasNote ? shortText(row.note, 130) : 'No note yet'}</span>
+                <span className="notes-directory-date">{row.updatedAt ? `Updated ${new Date(row.updatedAt).toLocaleDateString()}` : 'Ready to write'}</span>
+              </button>
+            ))}
+            {!filteredRows.length ? <div className="notes-empty-state"><FileText size={22} aria-hidden="true" /><p>No matching symbols.</p></div> : null}
           </div>
         </article>
 
-        <article className="panel">
-          <h2>Note Overview</h2>
-          <div className="stack-form">
-            <input
-              placeholder="Filter symbol"
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value.toUpperCase())}
-            />
-            <div className="rank-filter-tabs">
-              <button type="button" className={viewMode === 'ALL' ? 'rank-tab active' : 'rank-tab'} onClick={() => setViewMode('ALL')}>
-                All ({noteRows.length})
-              </button>
-              <button type="button" className={viewMode === 'WITH_NOTE' ? 'rank-tab active' : 'rank-tab'} onClick={() => setViewMode('WITH_NOTE')}>
-                With Notes ({noteRows.filter((r) => r.hasNote).length})
-              </button>
+        <article className="panel notes-editor-workspace mobile-hide">
+          <header className="notes-editor-header">
+            <div>
+              <p className="eyebrow">{selectedSymbol ? (currentHoldingSymbols.has(selectedSymbol) ? 'Current holding' : 'Past position') : 'Research note'}</p>
+              <h2>{selectedSymbol || 'Select a symbol'}</h2>
             </div>
-
-            <div className="table-wrap notes-overview-wrap">
-              <table className="notes-overview-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Preview</th>
-                    <th>Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRows.map((row) => (
-                    <tr
-                      key={row.symbol}
-                      className={`note-row-clickable ${row.symbol === selectedSymbol ? 'note-row-active' : ''}`}
-                      onClick={() => setSelectedSymbol(row.symbol)}
-                    >
-                      <td className="notes-col-symbol">{row.symbol}</td>
-                      <td className="notes-col-preview">{shortText(row.note, 110)}</td>
-                      <td className="notes-col-updated">{row.updatedAt ? new Date(row.updatedAt).toLocaleString() : '--'}</td>
-                    </tr>
-                  ))}
-                  {!filteredRows.length ? (
-                    <tr>
-                      <td colSpan={3} className="muted">No rows.</td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            {!isEditing && selectedSymbol ? (
+              <RichTextActions isEditing={false} editLabel="Edit note" onEdit={() => setIsEditing(true)} />
+            ) : null}
+          </header>
+          {editorFields}
+          {isEditing ? <footer className="notes-editor-actions">{editorActions}</footer> : null}
         </article>
       </section>
 
-      <section className="panel">
-        <h2>All Historical Stock Notes</h2>
-        {allHistoricalNotes.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Status</th>
-                  <th>Last Updated</th>
-                  <th>Full Note</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {allHistoricalNotes.map((row) => (
-                  <tr key={`history-note-${row.symbol}`}>
-                    <td>{row.symbol}</td>
-                    <td>{row.isCurrent ? 'Current' : 'Past'}</td>
-                    <td>{row.updatedAt ? new Date(row.updatedAt).toLocaleString() : '--'}</td>
-                    <td className="note-full-text">{row.note}</td>
-                    <td>
-                      <button type="button" className="row-secondary-btn" onClick={() => setSelectedSymbol(row.symbol)}>
-                        Edit
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="muted">No saved stock notes yet.</p>
-        )}
-      </section>
+      <RowDetailSheet
+        open={noteSheetOpen}
+        title={selectedSymbol ? `${selectedSymbol} Note` : 'Stock Note'}
+        eyebrow={selectedSymbol && currentHoldingSymbols.has(selectedSymbol) ? 'Current holding' : 'Research workspace'}
+        onClose={() => setNoteSheetOpen(false)}
+        actions={editorActions}
+        fullHeight
+        initialFocusSelector={isEditing ? '.rich-text-surface' : undefined}
+      >
+        {editorFields}
+      </RowDetailSheet>
     </>
   );
 }

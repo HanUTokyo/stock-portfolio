@@ -5,6 +5,10 @@ import java.time.LocalDate;
 
 public record PriceHistoryPointResponse(
         LocalDate tradeDate,
-        BigDecimal closePrice
+        BigDecimal closePrice,
+        BigDecimal adjustedClosePrice
 ) {
+    public PriceHistoryPointResponse(LocalDate tradeDate, BigDecimal closePrice) {
+        this(tradeDate, closePrice, null);
+    }
 }

@@ -1,0 +1,4 @@
+ALTER TABLE earnings_history
+    ADD COLUMN IF NOT EXISTS capex NUMERIC(19,4),
+    ADD COLUMN IF NOT EXISTS adjusted_fcf NUMERIC(19,4),
+    ADD COLUMN IF NOT EXISTS interest_expense NUMERIC(19,4);

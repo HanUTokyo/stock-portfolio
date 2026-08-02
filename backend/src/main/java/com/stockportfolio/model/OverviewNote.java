@@ -12,6 +12,10 @@ public class OverviewNote {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(nullable = false)
+    private Long version;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "note_type", nullable = false, length = 20)
     private OverviewNoteType noteType;
@@ -35,6 +39,9 @@ public class OverviewNote {
     public void setId(Long id) {
         this.id = id;
     }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 
     public OverviewNoteType getNoteType() {
         return noteType;

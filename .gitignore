@@ -1,13 +1,48 @@
-# macOS
+# Operating systems and editors
 .DS_Store
+.Rhistory
+.idea/
+.vscode/
+*.swp
+
+# Local environment files (examples remain tracked)
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Web release scope: native clients are intentionally not published
+ios/
+android/
 
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.playwright-cli/
 
 # Java / backend
 backend/target/
 
-# IDE
-.idea/
-.vscode/
+# Local automation and browser artifacts
+.codex-screenshots/
+.playwright-cli/
+.playwright-mcp/
+.run-logs/
+.github/java-upgrade/
+
+# Private data, generated reports, and local verification artifacts
+backups/
+data/
+exports/
+output/
+reports/
+cash-flow-verification.png
+*.dump
+
+# Database snapshots and exported images
+docker/postgres-snapshot/snapshot.sql
+docker/stock-portfolio-postgres-snapshot-*.tar
+*.jks
+*.keystore

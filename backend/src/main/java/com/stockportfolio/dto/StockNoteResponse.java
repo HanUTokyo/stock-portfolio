@@ -5,6 +5,7 @@ import java.time.OffsetDateTime;
 public record StockNoteResponse(
         String symbol,
         String note,
-        OffsetDateTime updatedAt
+        OffsetDateTime updatedAt,
+        Long version
 ) {
 }

@@ -1,6 +1,8 @@
 package com.stockportfolio.controller;
 
 import com.stockportfolio.dto.AssetCurvePointResponse;
+import com.stockportfolio.dto.CapitalAllocationHistoryResponse;
+import com.stockportfolio.dto.FundamentalBackfillResponse;
 import com.stockportfolio.dto.HoldingResponse;
 import com.stockportfolio.dto.MarketCloseSyncResponse;
 import com.stockportfolio.dto.PeHistoryPointResponse;
@@ -9,6 +11,8 @@ import com.stockportfolio.dto.PriceHistoryPointResponse;
 import com.stockportfolio.dto.PriceRefreshResponse;
 import com.stockportfolio.dto.PortfolioSummaryResponse;
 import com.stockportfolio.dto.PortfolioExportResponse;
+import com.stockportfolio.dto.PortfolioExportV2Response;
+import com.stockportfolio.dto.QuarterlyFundamentalPointResponse;
 import com.stockportfolio.service.PortfolioService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -44,6 +48,11 @@ public class PortfolioController {
         return portfolioService.exportPortfolio();
     }
 
+    @GetMapping("/export/v2")
+    public PortfolioExportV2Response exportV2() {
+        return portfolioService.exportPortfolioV2();
+    }
+
     @GetMapping("/asset-curve")
     public List<AssetCurvePointResponse> assetCurve() {
         return portfolioService.getAssetCurve();
@@ -62,7 +71,7 @@ public class PortfolioController {
     @PostMapping("/history/prices/backfill")
     public PriceHistoryBackfillResponse backfillPriceHistory(
             @RequestParam(required = false) String symbols,
-            @RequestParam(defaultValue = "10") int years
+            @RequestParam(defaultValue = "15") int years
     ) {
         return portfolioService.backfillPriceHistory(symbols, years, "MANUAL_BACKFILL");
     }
@@ -70,9 +79,17 @@ public class PortfolioController {
     @PostMapping("/history/pe/backfill")
     public PriceHistoryBackfillResponse backfillPeHistory(
             @RequestParam(required = false) String symbols,
-            @RequestParam(defaultValue = "10") int years
+            @RequestParam(defaultValue = "15") int years
     ) {
         return portfolioService.backfillPeHistory(symbols, years, "MANUAL_PE_BACKFILL");
+    }
+
+    @PostMapping("/history/fundamentals/backfill-missing")
+    public FundamentalBackfillResponse backfillMissingFundamentals(
+            @RequestParam(required = false) String symbols,
+            @RequestParam(defaultValue = "15") int years
+    ) {
+        return portfolioService.backfillMissingFundamentals(symbols, years, "MANUAL_FUNDAMENTALS_BACKFILL_MISSING");
     }
 
     @GetMapping("/history/prices")
@@ -91,5 +108,23 @@ public class PortfolioController {
             @RequestParam(required = false) LocalDate to
     ) {
         return portfolioService.getPeHistory(symbol, from, to);
+    }
+
+    @GetMapping("/history/fundamentals")
+    public List<QuarterlyFundamentalPointResponse> quarterlyFundamentals(
+            @RequestParam String symbol,
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to
+    ) {
+        return portfolioService.getQuarterlyFundamentals(symbol, from, to);
+    }
+
+    @GetMapping("/history/capital-allocation")
+    public CapitalAllocationHistoryResponse capitalAllocationHistory(
+            @RequestParam String symbol,
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to
+    ) {
+        return portfolioService.getCapitalAllocationHistory(symbol, from, to);
     }
 }
