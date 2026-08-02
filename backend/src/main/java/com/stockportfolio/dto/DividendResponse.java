@@ -9,6 +9,7 @@ public record DividendResponse(
         String symbol,
         BigDecimal amount,
         LocalDate paidDate,
-        OffsetDateTime createdAt
+        OffsetDateTime createdAt,
+        Long version
 ) {
 }

@@ -9,17 +9,21 @@ export function formatDateInput(date) {
   return `${year}-${month}-${day}`;
 }
 
-export function buildAssetChart(assetCurve) {
+export function buildAssetChart(assetCurve, options = {}) {
   if (!assetCurve.length) {
     return { hasData: false };
   }
 
-  const width = 900;
-  const height = 320;
-  const plotLeft = 14;
-  const plotRight = width - 110;
-  const plotTop = 16;
-  const plotBottom = height - 46;
+  const measuredWidth = Number(options.width);
+  const compact = Boolean(options.compact) || (Number.isFinite(measuredWidth) && measuredWidth < 560);
+  const width = Number.isFinite(measuredWidth) && measuredWidth > 0
+    ? Math.max(Math.round(measuredWidth), 320)
+    : 900;
+  const height = compact ? 250 : 320;
+  const plotLeft = compact ? 10 : 14;
+  const plotRight = width - (compact ? 10 : 110);
+  const plotTop = compact ? 12 : 16;
+  const plotBottom = height - (compact ? 34 : 46);
 
   const portfolioValues = assetCurve.map((point) => Number(point.totalAssets ?? 0));
   const costBasisValues = assetCurve.map((point) => Number(point.totalCostBasis ?? point.totalAssets ?? 0));
@@ -91,7 +95,7 @@ export function buildAssetChart(assetCurve) {
     return { y, value };
   });
 
-  const xTicks = buildTimeTicks(minTime, maxTime).map((timeValue) => {
+  const xTicks = preventEndTickOverlap(buildTimeTicks(minTime, maxTime, compact).map((timeValue) => {
     const x = plotLeft + ((timeValue - minTime) / timeSpan) * (plotRight - plotLeft);
     const date = new Date(timeValue);
     const isYearMark = date.getMonth() === 0;
@@ -99,7 +103,7 @@ export function buildAssetChart(assetCurve) {
       ? String(date.getFullYear())
       : date.toLocaleDateString('en-US', { month: 'short' });
     return { x, label, isYearMark };
-  });
+  }), compact ? 42 : 54);
 
   const yearSeparators = buildYearSeparators(minTime, maxTime).map((timeValue) => {
     const x = plotLeft + ((timeValue - minTime) / timeSpan) * (plotRight - plotLeft);
@@ -163,14 +167,14 @@ function niceStep(rawStep) {
   return 10 * magnitude;
 }
 
-function buildTimeTicks(minTime, maxTime) {
+function buildTimeTicks(minTime, maxTime, compact = false) {
   const minDate = new Date(minTime);
   const maxDate = new Date(maxTime);
 
   const ticks = [];
   const cursor = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
   const totalMonths = (maxDate.getFullYear() - minDate.getFullYear()) * 12 + (maxDate.getMonth() - minDate.getMonth());
-  const monthStep = totalMonths > 24 ? 3 : 2;
+  const monthStep = compact ? (totalMonths > 18 ? 6 : 3) : (totalMonths > 24 ? 3 : 2);
 
   while (cursor.getTime() <= maxTime) {
     ticks.push(cursor.getTime());
@@ -181,6 +185,17 @@ function buildTimeTicks(minTime, maxTime) {
   if (ticks[ticks.length - 1] < maxTime) ticks.push(maxTime);
 
   return ticks;
+}
+
+function preventEndTickOverlap(ticks, minGap) {
+  if (ticks.length < 2) return ticks;
+  const result = [...ticks];
+  const last = result[result.length - 1];
+  for (let i = result.length - 2; i >= 0; i -= 1) {
+    if (Math.abs(last.x - result[i].x) >= minGap) break;
+    result.splice(i, 1);
+  }
+  return result;
 }
 
 function buildYearSeparators(minTime, maxTime) {
@@ -204,13 +219,22 @@ function buildYearSeparators(minTime, maxTime) {
   return separators;
 }
 
-export function buildComparisonChart(priceHistory, peHistory) {
+export function buildComparisonChart(priceHistory, peHistory, visiblePeSeries = {}) {
+  const visibleSeries = {
+    ttmPe: visiblePeSeries.ttmPe !== false,
+    nonGaapTtmPe: visiblePeSeries.nonGaapTtmPe !== false,
+    quarterlyPe: visiblePeSeries.quarterlyPe !== false,
+    forwardPe: visiblePeSeries.forwardPe !== false
+  };
   const priceMap = new Map(priceHistory.map((point) => [point.tradeDate, Number(point.closePrice)]));
-  const peMap = new Map(peHistory.map((point) => [point.tradeDate, Number(point.trailingPe)]));
+  const peMap = new Map(peHistory.map((point) => [point.tradeDate, {
+    ttmPe: toFiniteNumber(point.ttmPe),
+    nonGaapTtmPe: toFiniteNumber(point.nonGaapTtmPe),
+    quarterlyPe: toFiniteNumber(point.quarterlyPe),
+    forwardPe: toFiniteNumber(point.forwardPe)
+  }]));
 
-  const dates = [...priceMap.keys()]
-    .filter((date) => peMap.has(date))
-    .sort((a, b) => new Date(a) - new Date(b));
+  const dates = [...priceMap.keys()].sort((a, b) => new Date(a) - new Date(b));
 
   if (dates.length === 0) {
     return { hasData: false };
@@ -224,12 +248,48 @@ export function buildComparisonChart(priceHistory, peHistory) {
   const plotBottom = height - 38;
 
   const priceValues = dates.map((date) => priceMap.get(date));
-  const peValues = dates.map((date) => peMap.get(date));
+  const fillInternalPeGaps = (key) => {
+    const firstIndex = dates.findIndex((date) => Number.isFinite(peMap.get(date)?.[key]));
+    let lastIndex = -1;
+    for (let index = dates.length - 1; index >= 0; index -= 1) {
+      if (Number.isFinite(peMap.get(dates[index])?.[key])) {
+        lastIndex = index;
+        break;
+      }
+    }
+    return new Map(dates.map((date, index) => {
+      const pe = peMap.get(date);
+      const value = pe?.[key];
+      if (Number.isFinite(value)) return [date, value];
+      if (firstIndex >= 0 && index > firstIndex && index < lastIndex) return [date, 0];
+      return [date, NaN];
+    }));
+  };
+  const ttmPeSeries = fillInternalPeGaps('ttmPe');
+  const nonGaapTtmPeSeries = fillInternalPeGaps('nonGaapTtmPe');
+  const quarterlyPeSeries = fillInternalPeGaps('quarterlyPe');
+
+  const peValues = dates.flatMap((date) => {
+    return [
+      visibleSeries.ttmPe ? ttmPeSeries.get(date) : NaN,
+      visibleSeries.nonGaapTtmPe ? nonGaapTtmPeSeries.get(date) : NaN,
+      visibleSeries.quarterlyPe ? quarterlyPeSeries.get(date) : NaN
+    ].filter(Number.isFinite);
+  });
+  const forwardPeSource = visibleSeries.forwardPe
+    ? dates
+      .map((date) => ({ date, value: peMap.get(date)?.forwardPe }))
+      .filter((point) => Number.isFinite(point.value))
+      .at(-1)
+    : null;
+  if (forwardPeSource) {
+    peValues.push(forwardPeSource.value);
+  }
 
   const priceMin = Math.min(...priceValues);
   const priceMax = Math.max(...priceValues);
-  const peMin = Math.min(...peValues);
-  const peMax = Math.max(...peValues);
+  const peMin = peValues.length ? Math.min(...peValues) : 0;
+  const peMax = peValues.length ? Math.max(...peValues) : 1;
 
   const priceSpan = Math.max(priceMax - priceMin, 1);
   const peSpan = Math.max(peMax - peMin, 1);
@@ -244,25 +304,40 @@ export function buildComparisonChart(priceHistory, peHistory) {
   const points = dates.map((date, index) => {
     const x = plotLeft + ((dateTimes[index] - minTime) / timeSpan) * plotWidth;
     const priceY = plotBottom - ((priceMap.get(date) - priceMin) / priceSpan) * plotHeight;
-    const peY = plotBottom - ((peMap.get(date) - peMin) / peSpan) * plotHeight;
-    return { x, priceY, peY };
+    const ttmPe = ttmPeSeries.get(date);
+    const nonGaapTtmPe = nonGaapTtmPeSeries.get(date);
+    const quarterlyPe = quarterlyPeSeries.get(date);
+    const ttmPeY = visibleSeries.ttmPe && Number.isFinite(ttmPe) ? plotBottom - ((ttmPe - peMin) / peSpan) * plotHeight : null;
+    const nonGaapTtmPeY = visibleSeries.nonGaapTtmPe && Number.isFinite(nonGaapTtmPe) ? plotBottom - ((nonGaapTtmPe - peMin) / peSpan) * plotHeight : null;
+    const quarterlyPeY = visibleSeries.quarterlyPe && Number.isFinite(quarterlyPe) ? plotBottom - ((quarterlyPe - peMin) / peSpan) * plotHeight : null;
+    return { x, priceY, ttmPeY, nonGaapTtmPeY, quarterlyPeY, date };
   });
 
   const pricePath = points
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.priceY.toFixed(2)}`)
     .join(' ');
-  const pePath = points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.peY.toFixed(2)}`)
-    .join(' ');
+  const ttmPePath = buildNullablePath(points, 'ttmPeY');
+  const nonGaapTtmPePath = buildNullablePath(points, 'nonGaapTtmPeY');
+  const quarterlyPePath = buildNullablePath(points, 'quarterlyPeY');
+  const forwardPePoint = forwardPeSource
+    ? {
+      x: plotLeft + ((new Date(`${forwardPeSource.date}T00:00:00Z`).getTime() - minTime) / timeSpan) * plotWidth,
+      y: plotBottom - ((forwardPeSource.value - peMin) / peSpan) * plotHeight,
+      value: forwardPeSource.value,
+      date: forwardPeSource.date
+    }
+    : null;
 
   const yTicksPrice = buildLinearTicks(priceMin, priceMax, 5).map((value) => ({
     value,
     y: plotBottom - ((value - priceMin) / priceSpan) * plotHeight
   }));
-  const yTicksPe = buildLinearTicks(peMin, peMax, 5).map((value) => ({
-    value,
-    y: plotBottom - ((value - peMin) / peSpan) * plotHeight
-  }));
+  const yTicksPe = peValues.length
+    ? buildLinearTicks(peMin, peMax, 5).map((value) => ({
+      value,
+      y: plotBottom - ((value - peMin) / peSpan) * plotHeight
+    }))
+    : [];
   const xTicks = buildDateTicks(dates, 6, longRange).map((item) => ({
     ...item,
     x: plotLeft + ((new Date(`${item.time}T00:00:00Z`).getTime() - minTime) / timeSpan) * plotWidth
@@ -282,9 +357,14 @@ export function buildComparisonChart(priceHistory, peHistory) {
     plotTop,
     plotBottom,
     pricePath,
-    pePath,
+    ttmPePath,
+    nonGaapTtmPePath,
+    quarterlyPePath,
+    forwardPePoint,
     pricePoints: points.map((point) => ({ x: point.x, y: point.priceY })),
-    pePoints: points.map((point) => ({ x: point.x, y: point.peY })),
+    ttmPePoints: points.filter((point) => point.ttmPeY != null).map((point) => ({ x: point.x, y: point.ttmPeY })),
+    nonGaapTtmPePoints: points.filter((point) => point.nonGaapTtmPeY != null).map((point) => ({ x: point.x, y: point.nonGaapTtmPeY })),
+    quarterlyPePoints: points.filter((point) => point.quarterlyPeY != null).map((point) => ({ x: point.x, y: point.quarterlyPeY })),
     yTicksPrice,
     yTicksPe,
     xTicks,
@@ -294,8 +374,31 @@ export function buildComparisonChart(priceHistory, peHistory) {
     priceMin,
     priceMax,
     peMin,
-    peMax
+    peMax,
+    hasPeData: peValues.length > 0
   };
+}
+
+function toFiniteNumber(value) {
+  if (value == null) return NaN;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function buildNullablePath(points, key) {
+  let open = false;
+  return points
+    .map((point) => {
+      if (point[key] == null) {
+        open = false;
+        return '';
+      }
+      const prefix = open ? 'L' : 'M';
+      open = true;
+      return `${prefix} ${point.x.toFixed(2)} ${point[key].toFixed(2)}`;
+    })
+    .filter(Boolean)
+    .join(' ');
 }
 
 function buildComparisonYearSeparators(dates) {

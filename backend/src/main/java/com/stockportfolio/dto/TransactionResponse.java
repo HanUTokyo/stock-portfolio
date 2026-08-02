@@ -12,6 +12,7 @@ public record TransactionResponse(
         BigDecimal quantity,
         BigDecimal price,
         String note,
-        OffsetDateTime executedAt
+        OffsetDateTime executedAt,
+        Long version
 ) {
 }

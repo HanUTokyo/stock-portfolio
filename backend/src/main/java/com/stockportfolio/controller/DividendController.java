@@ -28,6 +28,17 @@ public class DividendController {
         return portfolioService.recordDividend(request);
     }
 
+    @PutMapping("/{dividendId}")
+    public DividendResponse update(@PathVariable Long dividendId, @Valid @RequestBody DividendRequest request) {
+        return portfolioService.updateDividend(dividendId, request);
+    }
+
+    @DeleteMapping("/{dividendId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable Long dividendId) {
+        portfolioService.deleteDividend(dividendId);
+    }
+
     @GetMapping
     public List<DividendResponse> list() {
         return portfolioService.listDividends();

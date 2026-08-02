@@ -1,0 +1,6 @@
+package com.stockportfolio.dto;
+
+import java.util.List;
+
+public record DataReviewSummaryResponse(List<DataReviewSourceSummaryResponse> sources) {
+}

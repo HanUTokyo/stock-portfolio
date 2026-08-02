@@ -26,6 +26,9 @@ public class PriceHistory {
     @Column(name = "close_price", nullable = false, precision = 19, scale = 4)
     private BigDecimal closePrice;
 
+    @Column(name = "adjusted_close_price", precision = 19, scale = 4)
+    private BigDecimal adjustedClosePrice;
+
     @Column(name = "captured_at", nullable = false)
     private OffsetDateTime capturedAt;
 
@@ -66,6 +69,9 @@ public class PriceHistory {
     public void setClosePrice(BigDecimal closePrice) {
         this.closePrice = closePrice;
     }
+
+    public BigDecimal getAdjustedClosePrice() { return adjustedClosePrice; }
+    public void setAdjustedClosePrice(BigDecimal adjustedClosePrice) { this.adjustedClosePrice = adjustedClosePrice; }
 
     public OffsetDateTime getCapturedAt() {
         return capturedAt;

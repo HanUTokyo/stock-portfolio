@@ -11,6 +11,8 @@ public record CashAdjustmentResponse(
         BigDecimal amount,
         BigDecimal signedAmount,
         OffsetDateTime occurredAt,
-        OffsetDateTime createdAt
+        OffsetDateTime createdAt,
+        Long transactionId,
+        Long version
 ) {
 }

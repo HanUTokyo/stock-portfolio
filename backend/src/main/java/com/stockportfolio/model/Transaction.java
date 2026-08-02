@@ -12,6 +12,10 @@ public class Transaction {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(nullable = false)
+    private Long version;
+
     @Column(nullable = false, length = 20)
     private String symbol;
 
@@ -19,7 +23,7 @@ public class Transaction {
     @Column(nullable = false, length = 10)
     private TransactionType type;
 
-    @Column(nullable = false, precision = 19, scale = 4)
+    @Column(nullable = false, precision = 27, scale = 8)
     private BigDecimal quantity;
 
     @Column(nullable = false, precision = 19, scale = 4)
@@ -45,6 +49,9 @@ public class Transaction {
     public void setId(Long id) {
         this.id = id;
     }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 
     public String getSymbol() {
         return symbol;

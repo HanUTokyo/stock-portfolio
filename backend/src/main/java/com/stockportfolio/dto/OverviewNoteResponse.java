@@ -7,6 +7,7 @@ import java.time.OffsetDateTime;
 public record OverviewNoteResponse(
         OverviewNoteType noteType,
         String note,
-        OffsetDateTime updatedAt
+        OffsetDateTime updatedAt,
+        Long version
 ) {
 }
