@@ -17,6 +17,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.LocalDate;
+import java.time.Duration;
 import java.util.*;
 
 /**
@@ -28,7 +29,10 @@ import java.util.*;
 @Service
 public class SecFilingXbrlGraphService {
     private final ObjectMapper objectMapper;
-    private final HttpClient httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
     private final String userAgent;
 
     public SecFilingXbrlGraphService(ObjectMapper objectMapper,
@@ -249,7 +253,7 @@ public class SecFilingXbrlGraphService {
     }
     private Document xml(String input) throws Exception { DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance(); factory.setNamespaceAware(true); factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true); return factory.newDocumentBuilder().parse(new InputSource(new StringReader(input))); }
     private JsonNode getJson(String url) throws Exception { return objectMapper.readTree(getText(url)); }
-    private String getText(String url) throws Exception { HttpRequest request = HttpRequest.newBuilder(URI.create(url)).header("User-Agent", userAgent).GET().build(); HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString()); if (response.statusCode() >= 400) throw new IllegalStateException("SEC HTTP " + response.statusCode()); return response.body(); }
+    private String getText(String url) throws Exception { HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).header("User-Agent", userAgent).GET().build(); HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString()); if (response.statusCode() >= 400) throw new IllegalStateException("SEC HTTP " + response.statusCode()); return response.body(); }
     private String attr(Element element, String name) { String value = element.getAttributeNS("http://www.w3.org/1999/xlink", name); return value.isBlank() ? element.getAttribute(name) : value; }
     private String text(Element parent, String localName) { NodeList nodes = parent.getElementsByTagNameNS("*", localName); return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent(); }
     private boolean isSelectedEquityContext(String concept, EquityContext context) {

@@ -21,6 +21,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.LocalDate;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,6 +34,7 @@ import java.util.LinkedHashSet;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 @Service
 public class SecCompanyFactsService {
@@ -54,7 +56,10 @@ public class SecCompanyFactsService {
                                   @Value("${app.sec.user-agent:stock-portfolio kaihan@example.com}") String userAgent) {
         this.objectMapper = objectMapper;
         this.userAgent = userAgent;
-        this.httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
     }
 
     @Autowired(required = false)
@@ -159,7 +164,22 @@ public class SecCompanyFactsService {
 
     /** Re-ingests filing-scoped XBRL evidence without changing earnings-history values. */
     public void rebuildFilingCashFlowGraph(String symbol, LocalDate from, LocalDate to) throws IOException, InterruptedException {
-        fetchQuarterlyFundamentalsHistory(symbol, from, to);
+        rebuildFilingCashFlowGraph(symbol, from, to, ignored -> { });
+    }
+
+    /**
+     * Re-ingests only filing-scoped cash-flow evidence and reports bounded filing progress.
+     * It deliberately avoids the wider Company Facts import so an on-demand graph rebuild
+     * cannot change earnings history or reviewed data.
+     */
+    public void rebuildFilingCashFlowGraph(String symbol, LocalDate from, LocalDate to,
+                                           Consumer<FilingGraphRebuildProgress> progress) throws IOException, InterruptedException {
+        Optional<String> cik = resolveCik(symbol);
+        if (cik.isEmpty()) return;
+        JsonNode root = readJson("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik.get() + ".json");
+        JsonNode usGaap = root.path("facts").path("us-gaap");
+        if (usGaap.isMissingNode() || usGaap.isNull()) return;
+        persistCashFlowStatementGraphs(symbol, cik.get(), usGaap, from, to, progress == null ? ignored -> { } : progress);
     }
 
     /** Rebuilds only filing-scoped SEC share-count evidence; never touches reviewed overlays or earnings history. */
@@ -357,6 +377,11 @@ public class SecCompanyFactsService {
      * FCFF bridge and are never merged into a generic ΔNWC field.
      */
     private void persistCashFlowStatementGraphs(String symbol, String cik, JsonNode usGaap, LocalDate from, LocalDate to) {
+        persistCashFlowStatementGraphs(symbol, cik, usGaap, from, to, ignored -> { });
+    }
+
+    private void persistCashFlowStatementGraphs(String symbol, String cik, JsonNode usGaap, LocalDate from, LocalDate to,
+                                                Consumer<FilingGraphRebuildProgress> progress) {
         if (factObservationRepository == null || filingXbrlGraphService == null) return;
         JsonNode values = usGaap.path("NetCashProvidedByUsedInOperatingActivities").path("units").path("USD");
         if (!values.isArray()) return;
@@ -370,25 +395,34 @@ public class SecCompanyFactsService {
         // Bound the sync cost; older filings are ingested on their historical sync runs.
         List<Map.Entry<String, LocalDate>> latest = filings.entrySet().stream()
                 .sorted(Map.Entry.<String, LocalDate>comparingByValue().reversed()).limit(12).toList();
+        progress.accept(new FilingGraphRebuildProgress(latest.size(), 0, null, "STARTED", null));
+        int completed = 0;
         for (Map.Entry<String, LocalDate> filing : latest) {
             SecFilingXbrlGraphService.FilingGraph graph = filingXbrlGraphService.load(cik, filing.getKey());
-            if (!"AVAILABLE".equals(graph.status())) continue;
-            for (SecFilingXbrlGraphService.Fact fact : graph.nonOverlappingLeafFacts()) {
-                if (fact.end().isBefore(from) || fact.end().isAfter(to) || fact.unit() == null || !fact.unit().toUpperCase().contains("USD")) continue;
-                String field = filingLeafFieldName(fact.concept());
-                if (factObservationRepository.existsBySymbolAndPeriodEndAndFieldNameAndSourceDateAndAccessionNumberAndUnit(
-                        symbol, fact.end(), field, filing.getValue(), filing.getKey(), fact.unit())) continue;
-                try {
-                    FundamentalFactObservation observation = new FundamentalFactObservation();
-                    observation.setSymbol(symbol.trim().toUpperCase()); observation.setPeriodEnd(fact.end()); observation.setFieldName(field);
-                    observation.setPeriodStart(fact.start()); observation.setXbrlBucket(fact.bucket()); observation.setCalculationWeight(fact.calculationWeight());
-                    observation.setValue(new BigDecimal(fact.value())); observation.setUnit(fact.unit()); observation.setCurrencyCode("USD");
-                    observation.setSourceCode("SEC_FILING_XBRL"); observation.setSourceDate(filing.getValue()); observation.setAccessionNumber(filing.getKey()); observation.setForm("XBRL");
-                    factObservationRepository.save(observation);
-                } catch (RuntimeException ignored) { /* malformed fact cannot make a filing bridge complete */ }
+            if ("AVAILABLE".equals(graph.status())) {
+                for (SecFilingXbrlGraphService.Fact fact : graph.nonOverlappingLeafFacts()) {
+                    if (fact.end().isBefore(from) || fact.end().isAfter(to) || fact.unit() == null || !fact.unit().toUpperCase().contains("USD")) continue;
+                    String field = filingLeafFieldName(fact.concept());
+                    if (factObservationRepository.existsBySymbolAndPeriodEndAndFieldNameAndSourceDateAndAccessionNumberAndUnit(
+                            symbol, fact.end(), field, filing.getValue(), filing.getKey(), fact.unit())) continue;
+                    try {
+                        FundamentalFactObservation observation = new FundamentalFactObservation();
+                        observation.setSymbol(symbol.trim().toUpperCase()); observation.setPeriodEnd(fact.end()); observation.setFieldName(field);
+                        observation.setPeriodStart(fact.start()); observation.setXbrlBucket(fact.bucket()); observation.setCalculationWeight(fact.calculationWeight());
+                        observation.setValue(new BigDecimal(fact.value())); observation.setUnit(fact.unit()); observation.setCurrencyCode("USD");
+                        observation.setSourceCode("SEC_FILING_XBRL"); observation.setSourceDate(filing.getValue()); observation.setAccessionNumber(filing.getKey()); observation.setForm("XBRL");
+                        factObservationRepository.save(observation);
+                    } catch (RuntimeException ignored) { /* malformed fact cannot make a filing bridge complete */ }
+                }
             }
+            completed++;
+            String message = "AVAILABLE".equals(graph.status()) ? null : String.join("; ", graph.warnings());
+            progress.accept(new FilingGraphRebuildProgress(latest.size(), completed, filing.getKey(), graph.status(), message));
         }
     }
+
+    public record FilingGraphRebuildProgress(int totalFilings, int completedFilings, String accessionNumber,
+                                             String filingStatus, String message) { }
 
     private String filingLeafFieldName(String concept) {
         String prefix = "xbrlCashFlowLeaf.";
@@ -800,6 +834,7 @@ public class SecCompanyFactsService {
 
     private JsonNode readJson(String url) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(30))
                 .header("User-Agent", userAgent)
                 .header("Accept-Encoding", "identity")
                 .GET()
