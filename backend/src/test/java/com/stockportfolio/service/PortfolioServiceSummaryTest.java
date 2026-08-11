@@ -24,6 +24,7 @@ import com.stockportfolio.repository.PriceHistoryRepository;
 import com.stockportfolio.repository.PeHistoryRepository;
 import com.stockportfolio.repository.StockNoteRepository;
 import com.stockportfolio.repository.StockSplitRepository;
+import com.stockportfolio.repository.SecShareCountEvidenceRepository;
 import com.stockportfolio.repository.TransactionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -68,6 +69,8 @@ class PortfolioServiceSummaryTest {
     private EarningsHistoryRepository earningsHistoryRepository;
     @Mock
     private StockSplitRepository stockSplitRepository;
+    @Mock
+    private SecShareCountEvidenceRepository shareCountEvidenceRepository;
     @Mock
     private NonGaapEpsHistoryRepository nonGaapEpsHistoryRepository;
     @Mock
@@ -307,6 +310,7 @@ class PortfolioServiceSummaryTest {
                 earningsEstimateRepository,
                 earningsHistoryRepository,
                 stockSplitRepository,
+                shareCountEvidenceRepository,
                 nonGaapEpsHistoryRepository,
                 fundamentalNoteRepository,
                 fundamentalFactObservationRepository,

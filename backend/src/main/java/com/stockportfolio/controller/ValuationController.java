@@ -14,6 +14,12 @@ public class ValuationController {
     @GetMapping("/{symbol}")
     public ValuationResponse get(@PathVariable String symbol) { return service.get(symbol); }
 
+    @GetMapping("/{symbol}/wacc-references")
+    public WaccReferencesResponse waccReferences(@PathVariable String symbol) { return service.waccReferences(symbol); }
+
+    @PostMapping("/{symbol}/wacc-references/refresh")
+    public WaccReferencesResponse refreshWaccReferences(@PathVariable String symbol) { return service.refreshWaccReferences(symbol); }
+
     @PostMapping("/{symbol}/evaluate")
     public ValuationEvaluationResponse evaluate(@PathVariable String symbol,
                                                 @Valid @RequestBody ValuationEvaluateRequest request) {

@@ -13,6 +13,7 @@ public class FundamentalFactObservation {
     private Long id;
     @Column(nullable = false, length = 20) private String symbol;
     @Column(name = "period_end", nullable = false) private LocalDate periodEnd;
+    @Column(name = "period_start") private LocalDate periodStart;
     @Column(name = "fiscal_year") private Integer fiscalYear;
     @Column(name = "fiscal_period", length = 8) private String fiscalPeriod;
     @Column(name = "field_name", nullable = false, length = 80) private String fieldName;
@@ -23,6 +24,8 @@ public class FundamentalFactObservation {
     @Column(name = "source_date", nullable = false) private LocalDate sourceDate;
     @Column(name = "accession_number", length = 32) private String accessionNumber;
     @Column(length = 16) private String form;
+    @Column(name = "xbrl_bucket", length = 48) private String xbrlBucket;
+    @Column(name = "calculation_weight") private Integer calculationWeight;
     @Column(name = "captured_at", nullable = false) private OffsetDateTime capturedAt;
 
     @PrePersist void create() { capturedAt = OffsetDateTime.now(); }
@@ -31,6 +34,8 @@ public class FundamentalFactObservation {
     public void setSymbol(String symbol) { this.symbol = symbol; }
     public LocalDate getPeriodEnd() { return periodEnd; }
     public void setPeriodEnd(LocalDate periodEnd) { this.periodEnd = periodEnd; }
+    public LocalDate getPeriodStart() { return periodStart; }
+    public void setPeriodStart(LocalDate periodStart) { this.periodStart = periodStart; }
     public Integer getFiscalYear() { return fiscalYear; }
     public void setFiscalYear(Integer fiscalYear) { this.fiscalYear = fiscalYear; }
     public String getFiscalPeriod() { return fiscalPeriod; }
@@ -51,5 +56,9 @@ public class FundamentalFactObservation {
     public void setAccessionNumber(String accessionNumber) { this.accessionNumber = accessionNumber; }
     public String getForm() { return form; }
     public void setForm(String form) { this.form = form; }
+    public String getXbrlBucket() { return xbrlBucket; }
+    public void setXbrlBucket(String xbrlBucket) { this.xbrlBucket = xbrlBucket; }
+    public Integer getCalculationWeight() { return calculationWeight; }
+    public void setCalculationWeight(Integer calculationWeight) { this.calculationWeight = calculationWeight; }
     public OffsetDateTime getCapturedAt() { return capturedAt; }
 }

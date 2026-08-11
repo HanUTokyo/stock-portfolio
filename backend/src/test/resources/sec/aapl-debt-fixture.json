@@ -1,0 +1,60 @@
+{
+  "facts": {
+    "us-gaap": {
+      "CommercialPaper": {
+        "units": {
+          "USD": [
+            {"end":"2026-06-27","val":1997000000,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      },
+      "LongTermDebtCurrent": {
+        "units": {
+          "USD": [
+            {"end":"2026-06-27","val":11007000000,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      },
+      "LongTermDebtNoncurrent": {
+        "units": {
+          "USD": [
+            {"end":"2026-06-27","val":71340000000,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      },
+      "ProceedsFromIssuanceOfLongTermDebt": {
+        "units": {
+          "USD": [
+            {"start":"2024-09-29","end":"2025-06-28","val":4481000000,"accn":"aapl-25-q3","fy":2025,"fp":"Q3","form":"10-Q","filed":"2025-08-01"},
+            {"start":"2024-09-29","end":"2025-09-27","val":4481000000,"accn":"aapl-25-fy","fy":2025,"fp":"FY","form":"10-K","filed":"2025-10-31"},
+            {"start":"2025-09-28","end":"2025-12-27","val":0,"accn":"aapl-26-q1","fy":2026,"fp":"Q1","form":"10-Q","filed":"2026-01-30"},
+            {"start":"2025-09-28","end":"2026-03-28","val":0,"accn":"aapl-26-q2","fy":2026,"fp":"Q2","form":"10-Q","filed":"2026-05-01"},
+            {"start":"2025-09-28","end":"2026-06-27","val":0,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      },
+      "RepaymentsOfLongTermDebt": {
+        "units": {
+          "USD": [
+            {"start":"2024-09-29","end":"2025-06-28","val":9682000000,"accn":"aapl-25-q3","fy":2025,"fp":"Q3","form":"10-Q","filed":"2025-08-01"},
+            {"start":"2024-09-29","end":"2025-09-27","val":10932000000,"accn":"aapl-25-fy","fy":2025,"fp":"FY","form":"10-K","filed":"2025-10-31"},
+            {"start":"2025-09-28","end":"2025-12-27","val":2164000000,"accn":"aapl-26-q1","fy":2026,"fp":"Q1","form":"10-Q","filed":"2026-01-30"},
+            {"start":"2025-09-28","end":"2026-03-28","val":7914000000,"accn":"aapl-26-q2","fy":2026,"fp":"Q2","form":"10-Q","filed":"2026-05-01"},
+            {"start":"2025-09-28","end":"2026-06-27","val":8146000000,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      },
+      "ProceedsFromRepaymentsOfCommercialPaper": {
+        "units": {
+          "USD": [
+            {"start":"2024-09-29","end":"2025-06-28","val":-65000000,"accn":"aapl-25-q3","fy":2025,"fp":"Q3","form":"10-Q","filed":"2025-08-01"},
+            {"start":"2024-09-29","end":"2025-09-27","val":-2032000000,"accn":"aapl-25-fy","fy":2025,"fp":"FY","form":"10-K","filed":"2025-10-31"},
+            {"start":"2025-09-28","end":"2025-12-27","val":-5910000000,"accn":"aapl-26-q1","fy":2026,"fp":"Q1","form":"10-Q","filed":"2026-01-30"},
+            {"start":"2025-09-28","end":"2026-03-28","val":-5911000000,"accn":"aapl-26-q2","fy":2026,"fp":"Q2","form":"10-Q","filed":"2026-05-01"},
+            {"start":"2025-09-28","end":"2026-06-27","val":-5911000000,"accn":"aapl-26-q3","fy":2026,"fp":"Q3","form":"10-Q","filed":"2026-07-31"}
+          ]
+        }
+      }
+    }
+  }
+}

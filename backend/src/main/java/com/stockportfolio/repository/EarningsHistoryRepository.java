@@ -2,6 +2,7 @@ package com.stockportfolio.repository;
 
 import com.stockportfolio.model.EarningsHistory;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -12,4 +13,7 @@ public interface EarningsHistoryRepository extends JpaRepository<EarningsHistory
     List<EarningsHistory> findBySymbolAndAsOfDateBetweenOrderByAsOfDateAsc(String symbol, LocalDate from, LocalDate to);
     List<EarningsHistory> findBySymbolAndAsOfDateLessThanEqualOrderByAsOfDateAsc(String symbol, LocalDate to);
     Optional<EarningsHistory> findTopBySymbolAndAsOfDateLessThanEqualOrderByAsOfDateDesc(String symbol, LocalDate asOfDate);
+
+    @Query("select distinct e.symbol from EarningsHistory e order by e.symbol")
+    List<String> findDistinctSymbols();
 }

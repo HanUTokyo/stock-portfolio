@@ -21,6 +21,12 @@ class ValuationEngineTest {
         ValuationEngine.Selection selection = engine.select(quarters(false, false), market, null);
 
         assertThat(selection.model()).isEqualTo("FCFF");
+        assertThat(selection.methodSelection("FCFF").available()).isTrue();
+        assertThat(selection.methodSelection("FCFE").available()).isTrue();
+        assertThat(selection.methodSelection("FCFF").latestTtmCashFlow()).isEqualByComparingTo("330");
+        assertThat(selection.methodSelection("FCFF").crossCheckTtmCashFlow()).isEqualByComparingTo("323");
+        assertThat(selection.methodSelection("FCFE").latestTtmCashFlow()).isEqualByComparingTo("340");
+        assertThat(selection.methodSelection("FCFE").crossCheckTtmCashFlow()).isEqualByComparingTo("347");
         assertThat(selection.baseCashFlow()).isPositive();
         assertThat(selection.crossCheckDifferencePct()).isLessThanOrEqualTo(bd("10"));
         assertThat(selection.netDebt()).isEqualByComparingTo("50");
@@ -35,6 +41,18 @@ class ValuationEngineTest {
 
         assertThat(selection.model()).isEqualTo("FCFE");
         assertThat(selection.missingFields()).isEmpty();
+        assertThat(selection.methodSelection("FCFF").missingInputs()).contains("interestExpense", "automaticWacc");
+        assertThat(selection.methodSelection("FCFE").available()).isTrue();
+    }
+
+    @Test
+    void reportedCashFcffRequiresCfoRatherThanUsingAnIncompleteOperatingReconstruction() {
+        ValuationEngine.Selection selection = engine.select(quarters(false, false, true), market, null);
+
+        assertThat(selection.model()).isNull();
+        assertThat(selection.methodSelection("FCFF").available()).isFalse();
+        assertThat(selection.methodSelection("FCFF").missingInputs()).contains("operatingCashFlow");
+        assertThat(selection.methodSelection("FCFE").available()).isFalse();
     }
 
     @Test
@@ -66,6 +84,64 @@ class ValuationEngineTest {
     }
 
     @Test
+    void calculatesFcffAndFcfeIndependentlyWithoutAveraging() {
+        ValuationEngine.Selection selection = engine.select(quarters(false, false), market, null);
+        ValuationEngine.GrowthInputs growth = new ValuationEngine.GrowthInputs(bd("8"), bd("8"), null);
+
+        ValuationScenarioResponse fcff = engine.evaluateSettingsForMethod("FCFF", "BASE", "EVALUATED",
+                engine.defaultSettings("BASE"), selection, market, growth, null);
+        ValuationScenarioResponse fcfe = engine.evaluateSettingsForMethod("FCFE", "BASE", "EVALUATED",
+                engine.defaultSettings("BASE"), selection, market, growth, null);
+
+        assertThat(fcff.valid()).isTrue();
+        assertThat(fcfe.valid()).isTrue();
+        assertThat(fcff.enterpriseValue()).isNotNull();
+        assertThat(fcfe.enterpriseValue()).isNull();
+        assertThat(fcff.selectedModel()).isEqualTo("FCFF");
+        assertThat(fcfe.selectedModel()).isEqualTo("FCFE");
+        assertThat(fcff.intrinsicValuePerShare()).isNotEqualByComparingTo(fcfe.intrinsicValuePerShare());
+    }
+
+    @Test
+    void autoScenariosShareTheSameNormalizedStartingCashFlow() {
+        ValuationEngine.Selection selection = engine.select(quarters(false, false), market, null);
+        ValuationEngine.GrowthInputs growth = new ValuationEngine.GrowthInputs(bd("8"), bd("8"), null);
+
+        ValuationAssumptions bear = engine.resolve("BEAR", engine.defaultSettings("BEAR"), selection, market, growth);
+        ValuationAssumptions base = engine.resolve("BASE", engine.defaultSettings("BASE"), selection, market, growth);
+        ValuationAssumptions bull = engine.resolve("BULL", engine.defaultSettings("BULL"), selection, market, growth);
+
+        assertThat(bear.baseCashFlow()).isEqualByComparingTo(selection.baseCashFlow());
+        assertThat(base.baseCashFlow()).isEqualByComparingTo(selection.baseCashFlow());
+        assertThat(bull.baseCashFlow()).isEqualByComparingTo(selection.baseCashFlow());
+    }
+
+    @Test
+    void fcfeDoesNotRequireCurrentPrice() {
+        ValuationEngine.MarketInputs noPrice = new ValuationEngine.MarketInputs(
+                null, bd("100"), bd("4"), bd("1"), bd("5"));
+
+        ValuationEngine.Selection selection = engine.select(quarters(false, false), noPrice, null);
+
+        assertThat(selection.model()).isEqualTo("FCFE");
+        assertThat(selection.methodSelection("FCFE").missingInputs()).doesNotContain("currentPrice");
+        assertThat(selection.methodSelection("FCFE").available()).isTrue();
+    }
+
+    @Test
+    void reconcilesAgainstFcffWithTenAndTwentyFivePercentReadinessThresholds() {
+        assertThat(engine.crossModelDifferencePct(bd("100"), bd("110"))).isEqualByComparingTo("10.0000");
+        assertThat(engine.crossModelReadiness(bd("10"), bd("100"), bd("110"))).isEqualTo("READY");
+        assertThat(engine.crossModelReadiness(bd("10.0001"), bd("100"), bd("110.0001")))
+                .isEqualTo("READY_WITH_CAVEATS");
+        assertThat(engine.crossModelReadiness(bd("25"), bd("100"), bd("125")))
+                .isEqualTo("READY_WITH_CAVEATS");
+        assertThat(engine.crossModelReadiness(bd("25.0001"), bd("100"), bd("125.0001")))
+                .isEqualTo("NOT_READY");
+        assertThat(engine.crossModelReadiness(null, bd("100"), null)).isEqualTo("UNAVAILABLE");
+    }
+
+    @Test
     void resolvesCompanySpecificGrowthAndCustomAnnualPath() {
         ValuationEngine.Selection selection = engine.select(quarters(false, false), market, null);
         ValuationAssumptions auto = engine.resolve("BASE", engine.defaultSettings("BASE"), selection, market,
@@ -89,14 +165,19 @@ class ValuationEngineTest {
     }
 
     private List<ValuationEngine.Quarter> quarters(boolean missingInterest, boolean missingBorrowing) {
+        return quarters(missingInterest, missingBorrowing, false);
+    }
+
+    private List<ValuationEngine.Quarter> quarters(boolean missingInterest, boolean missingBorrowing,
+                                                   boolean missingCfo) {
         List<ValuationEngine.Quarter> rows = new ArrayList<>();
         LocalDate date = LocalDate.of(2024, 3, 31);
         for (int i = 0; i < 8; i++) {
             rows.add(new ValuationEngine.Quarter(
                     date.plusMonths(i * 3L), date.plusMonths(i * 3L).plusDays(35),
-                    2024 + i / 4, "Q" + (i % 4 + 1), bd("1.00"), bd("100"), bd("20"),
+                    2024 + i / 4, "Q" + (i % 4 + 1), bd("1.00"), missingCfo ? null : bd("100"), bd("20"),
                     missingInterest ? null : bd("1"), missingBorrowing ? null : bd("5"), bd("25"),
-                    bd("-5"), bd("110"), bd("25"), bd("100"), bd("75"), bd("500"),
+                    bd("5"), bd("110"), bd("25"), bd("100"), bd("75"), bd("500"),
                     bd("100"), bd("20"), bd("10"), bd("20"), bd("580"), bd("500"), bd("400"), bd("1000"), "USD"));
         }
         return rows;

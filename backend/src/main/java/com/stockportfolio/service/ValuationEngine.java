@@ -88,9 +88,53 @@ public class ValuationEngine {
             List<BigDecimal> historicalGrowthComponentsPct,
             List<String> missingFields,
             List<String> warnings,
-            List<Quarter> quarters
+            List<Quarter> quarters,
+            List<MethodSelection> methodSelections
     ) {
-        public boolean available() { return model != null && baseCashFlow != null && baseCashFlow.signum() > 0; }
+        public boolean available() {
+            return model != null && missingFields != null && missingFields.isEmpty()
+                    && baseCashFlow != null && baseCashFlow.signum() > 0
+                    && automaticDiscountRatePct != null;
+        }
+
+        public MethodSelection methodSelection(String method) {
+            if (methodSelections == null) return null;
+            return methodSelections.stream()
+                    .filter(candidate -> candidate.method().equalsIgnoreCase(method))
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        public Selection forMethod(String method) {
+            MethodSelection selected = methodSelection(method);
+            if (selected == null) return this;
+            return new Selection(selected.method(), selected.latestTtmCashFlow(), selected.normalizedBaseCashFlow(),
+                    selected.initialGrowthRatePct(), selected.automaticDiscountRatePct(), taxRatePct,
+                    selected.definitionCrossCheckDifferencePct(), netDebt, debt, cash, shortTermInvestments,
+                    noncurrentMarketableSecurities, selected.growthSampleCount(),
+                    selected.historicalGrowthComponentsPct(), selected.missingInputs(), selected.warnings(), quarters,
+                    methodSelections);
+        }
+    }
+
+    public record MethodSelection(
+            String method,
+            BigDecimal latestTtmCashFlow,
+            BigDecimal crossCheckTtmCashFlow,
+            BigDecimal normalizedBaseCashFlow,
+            BigDecimal initialGrowthRatePct,
+            BigDecimal automaticDiscountRatePct,
+            BigDecimal definitionCrossCheckDifferencePct,
+            int growthSampleCount,
+            List<BigDecimal> historicalGrowthComponentsPct,
+            List<String> missingInputs,
+            List<String> warnings
+    ) {
+        public boolean available() {
+            return missingInputs.isEmpty() && latestTtmCashFlow != null && latestTtmCashFlow.signum() > 0
+                    && normalizedBaseCashFlow != null && normalizedBaseCashFlow.signum() > 0
+                    && automaticDiscountRatePct != null;
+        }
     }
 
     public record GrowthInputs(BigDecimal autoGrowthPct, BigDecimal historicalGrowthPct,
@@ -98,93 +142,130 @@ public class ValuationEngine {
 
     public Selection select(List<Quarter> source, MarketInputs market, BigDecimal taxOverridePct) {
         List<Quarter> rows = source.stream().sorted(Comparator.comparing(Quarter::periodEnd)).toList();
-        List<String> missing = new ArrayList<>();
-        List<String> warnings = new ArrayList<>();
         if (rows.size() < 4) return unavailable(rows, List.of("fourConsecutiveActualQuarters"));
         List<Quarter> latest = rows.subList(rows.size() - 4, rows.size());
         if (!consecutive(latest)) return unavailable(rows, List.of("fourConsecutiveActualQuarters"));
 
         BigDecimal taxRatePct = resolveTaxRatePct(rows, taxOverridePct);
-        if (taxRatePct == null) missing.add("taxRate");
         BigDecimal tax = taxRatePct == null ? null : taxRatePct.divide(ONE_HUNDRED, MC);
         BigDecimal cfo = sumRequired(latest, Quarter::cfo);
         BigDecimal capex = sumRequired(latest, Quarter::capex);
         BigDecimal interest = sumRequired(latest, Quarter::interestExpense);
+        BigDecimal netBorrowing = sumRequired(latest, Quarter::netBorrowing);
+        BigDecimal operatingIncome = sumRequired(latest, Quarter::operatingIncome);
+        BigDecimal depreciationAmortization = sumRequired(latest, Quarter::depreciationAmortization);
+        BigDecimal deltaNwc = sumRequired(latest, Quarter::changeInWorkingCapital);
         BigDecimal debt = latestNonNull(latest, Quarter::debt);
         BigDecimal cash = latestNonNull(latest, Quarter::cash);
-        BigDecimal marketCap = multiply(market.currentPrice(), market.sharesOutstanding());
-        boolean immaterialDebt = debt != null && marketCap != null && marketCap.signum() > 0
-                && debt.divide(marketCap, MC).compareTo(new BigDecimal("0.01")) < 0;
-        if (interest == null && immaterialDebt) {
-            interest = BigDecimal.ZERO;
-            warnings.add("Interest expense treated as zero because debt is below 1% of market value.");
-        }
-
-        boolean fcffInputs = cfo != null && capex != null && interest != null && tax != null;
-        BigDecimal coePct = costOfEquityPct(market);
-        BigDecimal discountPct = null;
-        BigDecimal fcff = null;
-        BigDecimal crossDifference = null;
-        if (fcffInputs) {
-            fcff = cfo.add(interest.multiply(BigDecimal.ONE.subtract(tax), MC), MC).subtract(capex, MC);
-            discountPct = waccPct(latest, marketCap, debt, tax, coePct, immaterialDebt);
-            BigDecimal operatingIncome = sumRequired(latest, Quarter::operatingIncome);
-            BigDecimal da = sumRequired(latest, Quarter::depreciationAmortization);
-            BigDecimal nwc = sumRequired(latest, Quarter::changeInWorkingCapital);
-            if (operatingIncome != null && da != null && nwc != null) {
-                // SEC/Yahoo cash-flow tags express the working-capital cash effect; accounting ΔNWC has the opposite sign.
-                BigDecimal cross = operatingIncome.multiply(BigDecimal.ONE.subtract(tax), MC)
-                        .add(da, MC).subtract(capex, MC).add(nwc, MC);
-                crossDifference = relativeDifferencePct(fcff, cross);
-                if (crossDifference.compareTo(BigDecimal.valueOf(25)) > 0) warnings.add("Severe FCFF definition conflict above 25%.");
-                else if (crossDifference.compareTo(BigDecimal.TEN) > 0) warnings.add("FCFF cross-check difference is above 10%.");
-            } else {
-                warnings.add("FCFF cross-check is unavailable because D&A, NOPAT, or working-capital change is missing.");
-            }
-            if (discountPct == null) missing.add("automaticWacc");
-        }
-
-        String model = null;
-        BigDecimal latestTtm = null;
-        if (fcffInputs && fcff != null && fcff.signum() > 0 && discountPct != null) {
-            model = "FCFF";
-            latestTtm = fcff;
-        } else {
-            BigDecimal netBorrowing = sumRequired(latest, Quarter::netBorrowing);
-            if (cfo != null && capex != null && netBorrowing != null && coePct != null) {
-                BigDecimal fcfe = cfo.subtract(capex, MC).add(netBorrowing, MC);
-                if (fcfe.signum() > 0) {
-                    model = "FCFE";
-                    latestTtm = fcfe;
-                    discountPct = coePct;
-                    missing.clear();
-                } else missing.add("positiveFcfe");
-            } else {
-                if (cfo == null) missing.add("operatingCashFlow");
-                if (capex == null) missing.add("capex");
-                if (netBorrowing == null) missing.add("netBorrowing");
-                if (coePct == null) missing.add("costOfEquity");
-                if (!fcffInputs && interest == null && !immaterialDebt) missing.add("interestExpense");
-            }
-        }
-        if (market.sharesOutstanding() == null || market.sharesOutstanding().signum() <= 0) missing.add("sharesOutstanding");
-        if (market.currentPrice() == null || market.currentPrice().signum() <= 0) missing.add("currentPrice");
-        if (model == null || !missing.isEmpty()) return unavailable(rows, missing.stream().distinct().toList());
-
-        List<BigDecimal> annual = annualTtmCashFlows(rows, model, tax, false);
-        BigDecimal base = annual.size() >= 3 ? median(annual.subList(annual.size() - 3, annual.size())) : latestTtm;
-        if (base == null || base.signum() <= 0) base = latestTtm;
-        List<BigDecimal> growthAnnual = annualTtmCashFlows(rows, model, tax, true);
-        List<BigDecimal> growthComponents = historicalGrowthComponents(growthAnnual);
-        BigDecimal growth = growthComponents.isEmpty() ? null : median(growthComponents)
-                .max(BigDecimal.valueOf(-5)).min(BigDecimal.valueOf(15)).setScale(4, RoundingMode.HALF_UP);
         BigDecimal shortTermInvestments = latestNonNull(latest, Quarter::shortTermInvestments);
         BigDecimal noncurrentMarketable = latestNonNull(latest, Quarter::noncurrentMarketableSecurities);
         BigDecimal netDebt = debt == null && cash == null && shortTermInvestments == null && noncurrentMarketable == null
                 ? null : nvl(debt).subtract(nvl(cash), MC).subtract(nvl(shortTermInvestments), MC).subtract(nvl(noncurrentMarketable), MC);
-        return new Selection(model, latestTtm, base, growth, discountPct, taxRatePct,
-                crossDifference, netDebt, debt, cash, shortTermInvestments, noncurrentMarketable,
-                growthAnnual.size(), growthComponents, List.of(), warnings, rows);
+        BigDecimal marketCap = multiply(market.currentPrice(), market.sharesOutstanding());
+        boolean immaterialDebt = debt != null && marketCap != null && marketCap.signum() > 0
+                && debt.divide(marketCap, MC).compareTo(new BigDecimal("0.01")) < 0;
+        List<String> fcffWarnings = new ArrayList<>();
+        if (interest == null && immaterialDebt) {
+            interest = BigDecimal.ZERO;
+            fcffWarnings.add("Interest expense treated as zero because debt is below 1% of market value.");
+        }
+
+        BigDecimal coePct = costOfEquityPct(market);
+        // The reported-cash definition is primary. CFO already contains the complete indirect
+        // cash-flow bridge (working capital plus non-cash adjustments); do not rebuild it from
+        // a partial ΔNWC tag. Add back the after-tax financing cost to unlever the reported CFO.
+        BigDecimal reportedCashFcff = cfo == null || capex == null || interest == null || tax == null
+                ? null : cfo.add(interest.multiply(BigDecimal.ONE.subtract(tax), MC), MC).subtract(capex, MC);
+        // This is an audit reconstruction only until every indirect-CFO adjustment and working-
+        // capital component is sourced on a non-overlapping basis. Quarter.changeInWorkingCapital
+        // is accounting ΔNWC (increase is positive), so the cash-flow formula subtracts it.
+        BigDecimal operatingFcff = operatingIncome == null || tax == null || depreciationAmortization == null
+                || capex == null || deltaNwc == null ? null
+                : operatingIncome.multiply(BigDecimal.ONE.subtract(tax), MC)
+                .add(depreciationAmortization, MC).subtract(capex, MC).subtract(deltaNwc, MC);
+        BigDecimal crossDifference = reportedCashFcff == null || operatingFcff == null
+                ? null : relativeDifferencePct(reportedCashFcff, operatingFcff);
+        if (crossDifference == null) {
+            fcffWarnings.add("NOPAT-based FCFF reconstruction is unavailable because a complete operating bridge is missing.");
+        } else if (crossDifference.compareTo(BigDecimal.valueOf(25)) > 0) {
+            fcffWarnings.add("Severe operating FCFF bridge gap above 25%; reported-cash FCFF remains primary pending a detailed indirect-CFO bridge.");
+        } else if (crossDifference.compareTo(BigDecimal.TEN) > 0) {
+            fcffWarnings.add("Operating FCFF bridge gap is above 10%; reported-cash FCFF remains primary pending a detailed indirect-CFO bridge.");
+        }
+        BigDecimal waccPct = waccPct(latest, marketCap, debt, tax, coePct, immaterialDebt);
+
+        BigDecimal fcfe = cfo == null || capex == null || netBorrowing == null
+                ? null : cfo.subtract(capex, MC).add(netBorrowing, MC);
+        BigDecimal operatingFcfe = operatingFcff == null || interest == null || tax == null || netBorrowing == null
+                ? null : operatingFcff.subtract(interest.multiply(BigDecimal.ONE.subtract(tax), MC), MC).add(netBorrowing, MC);
+        BigDecimal fcfeCrossDifference = fcfe == null || operatingFcfe == null
+                ? null : relativeDifferencePct(fcfe, operatingFcfe);
+        List<String> fcfeWarnings = new ArrayList<>();
+        fcfeWarnings.add("Debt policy uses reported net borrowing, including short- and long-term financing when supplied.");
+        if (fcfeCrossDifference == null) {
+            fcfeWarnings.add("Operating FCFE cross-check is unavailable because FCFF, interest, tax, or net borrowing is missing.");
+        } else if (fcfeCrossDifference.compareTo(BigDecimal.valueOf(25)) > 0) {
+            fcfeWarnings.add("Severe FCFE definition conflict above 25%.");
+        } else if (fcfeCrossDifference.compareTo(BigDecimal.TEN) > 0) {
+            fcfeWarnings.add("FCFE cross-check difference is above 10%.");
+        }
+
+        List<String> commonMissing = new ArrayList<>();
+        if (market.sharesOutstanding() == null || market.sharesOutstanding().signum() <= 0) commonMissing.add("sharesOutstanding");
+
+        List<String> fcffMissing = new ArrayList<>(commonMissing);
+        if (market.currentPrice() == null || market.currentPrice().signum() <= 0) fcffMissing.add("currentPrice");
+        if (cfo == null) fcffMissing.add("operatingCashFlow");
+        if (capex == null) fcffMissing.add("capex");
+        if (interest == null && !immaterialDebt) fcffMissing.add("interestExpense");
+        if (tax == null) fcffMissing.add("taxRate");
+        if (debt == null) fcffMissing.add("totalDebt");
+        if (cash == null) fcffMissing.add("cashAndEquivalents");
+        if (waccPct == null) fcffMissing.add("automaticWacc");
+        // Economic FCFF is primary only when inputs are complete; cash FCFF remains the explicitly named reconciliation reference.
+        MethodSelection fcffSelection = buildMethodSelection(rows, "FCFF", tax, operatingFcff, reportedCashFcff, waccPct,
+                crossDifference, fcffMissing, fcffWarnings);
+
+        List<String> fcfeMissing = new ArrayList<>(commonMissing);
+        if (cfo == null) fcfeMissing.add("operatingCashFlow");
+        if (capex == null) fcfeMissing.add("capex");
+        if (netBorrowing == null) fcfeMissing.add("netBorrowing");
+        if (coePct == null) fcfeMissing.add("costOfEquity");
+        MethodSelection fcfeSelection = buildMethodSelection(rows, "FCFE", tax, fcfe, operatingFcfe, coePct,
+                fcfeCrossDifference, fcfeMissing, fcfeWarnings);
+
+        List<MethodSelection> methods = List.of(fcffSelection, fcfeSelection);
+        MethodSelection selected = fcffSelection.available() ? fcffSelection : fcfeSelection.available() ? fcfeSelection : null;
+        if (selected == null) {
+            List<String> missing = methods.stream().flatMap(method -> method.missingInputs().stream()).distinct().toList();
+            return new Selection(null, null, null, null, null, taxRatePct, null, netDebt, debt, cash,
+                    shortTermInvestments, noncurrentMarketable, 0, List.of(), missing, List.of(), rows, methods);
+        }
+        return new Selection(selected.method(), selected.latestTtmCashFlow(), selected.normalizedBaseCashFlow(),
+                selected.initialGrowthRatePct(), selected.automaticDiscountRatePct(), taxRatePct,
+                selected.definitionCrossCheckDifferencePct(), netDebt, debt, cash, shortTermInvestments,
+                noncurrentMarketable, selected.growthSampleCount(), selected.historicalGrowthComponentsPct(),
+                List.of(), selected.warnings(), rows, methods);
+    }
+
+    private MethodSelection buildMethodSelection(List<Quarter> rows, String method, BigDecimal tax,
+                                                 BigDecimal latestTtm, BigDecimal crossCheckTtm,
+                                                 BigDecimal discountPct,
+                                                 BigDecimal definitionCrossCheckDifferencePct,
+                                                 List<String> rawMissing, List<String> warnings) {
+        List<String> missing = new ArrayList<>(rawMissing);
+        if (latestTtm == null || latestTtm.signum() <= 0) missing.add("positive" + method.substring(0, 1) + method.substring(1).toLowerCase());
+        List<BigDecimal> annual = annualTtmCashFlows(rows, method, tax, false);
+        BigDecimal base = annual.size() >= 3 ? median(annual.subList(annual.size() - 3, annual.size())) : latestTtm;
+        if (base == null || base.signum() <= 0) base = latestTtm;
+        if (base == null || base.signum() <= 0) missing.add("positiveNormalizedBaseCashFlow");
+        List<BigDecimal> growthAnnual = annualTtmCashFlows(rows, method, tax, true);
+        List<BigDecimal> growthComponents = historicalGrowthComponents(growthAnnual);
+        BigDecimal growth = growthComponents.isEmpty() ? null : median(growthComponents)
+                .max(BigDecimal.valueOf(-5)).min(BigDecimal.valueOf(15)).setScale(4, RoundingMode.HALF_UP);
+        return new MethodSelection(method, latestTtm, crossCheckTtm, base, growth, discountPct,
+                definitionCrossCheckDifferencePct, growthAnnual.size(), growthComponents,
+                missing.stream().distinct().toList(), List.copyOf(warnings));
     }
 
     public ValuationAssumptions defaultAssumptions(Selection selection, String type) {
@@ -194,13 +275,11 @@ public class ValuationEngine {
         BigDecimal terminal;
         BigDecimal margin;
         if ("BEAR".equals(type)) {
-            base = min(selection.latestTtmCashFlow(), base);
             growth = growth.subtract(BigDecimal.valueOf(4));
             discount = discount.add(new BigDecimal("1.5"));
             terminal = BigDecimal.valueOf(2);
             margin = BigDecimal.valueOf(30);
         } else if ("BULL".equals(type)) {
-            base = max(selection.latestTtmCashFlow(), base);
             growth = growth.add(BigDecimal.valueOf(4));
             discount = discount.subtract(BigDecimal.ONE);
             terminal = BigDecimal.valueOf(3);
@@ -221,7 +300,7 @@ public class ValuationEngine {
         BigDecimal margin = "BEAR".equals(type) ? BigDecimal.valueOf(30)
                 : "BULL".equals(type) ? BigDecimal.TEN : BigDecimal.valueOf(20);
         return new ValuationAssumptions(null, null, null, terminal, 10, margin, null,
-                "AUTO", "AUTO_BLEND", "AUTO", null, null, null, null);
+                "AUTO", "AUTO_BLEND", "AUTO", null, null, null, null, null);
     }
 
     public ValuationAssumptions normalizeLegacy(ValuationAssumptions input) {
@@ -230,7 +309,7 @@ public class ValuationEngine {
         return new ValuationAssumptions(input.baseCashFlow(), input.initialGrowthRatePct(), input.discountRatePct(),
                 input.terminalGrowthRatePct(), input.projectionYears(), input.marginOfSafetyPct(), input.taxRateOverridePct(),
                 "MANUAL", "CUSTOM_LINEAR", "MANUAL_RATE", input.annualGrowthRatesPct(),
-                input.riskFreeRatePct(), input.beta(), input.equityRiskPremiumPct());
+                input.riskFreeRatePct(), input.beta(), input.equityRiskPremiumPct(), input.fcffWaccSelection(), input.fcffCashInterestReference());
     }
 
     public ValuationAssumptions resolve(String type, ValuationAssumptions raw, Selection selection,
@@ -244,8 +323,6 @@ public class ValuationEngine {
         BigDecimal base = settings.baseCashFlow();
         if ("AUTO".equals(baseMode)) {
             base = selection.baseCashFlow();
-            if ("BEAR".equals(type)) base = min(selection.latestTtmCashFlow(), base);
-            else if ("BULL".equals(type)) base = max(selection.latestTtmCashFlow(), base);
         }
 
         BigDecimal growth = settings.initialGrowthRatePct();
@@ -282,7 +359,7 @@ public class ValuationEngine {
         List<BigDecimal> path = settings.annualGrowthRatesPct() == null ? null : List.copyOf(settings.annualGrowthRatesPct());
         return new ValuationAssumptions(scaleMoney(base), scaleRate(growth), scaleRate(discount), terminal,
                 settings.projectionYears(), settings.marginOfSafetyPct(), settings.taxRateOverridePct(),
-                baseMode, growthMode, discountMode, path, riskFree, beta, erp);
+                baseMode, growthMode, discountMode, path, riskFree, beta, erp, settings.fcffWaccSelection(), settings.fcffCashInterestReference());
     }
 
     public List<String> validate(ValuationAssumptions a) {
@@ -294,6 +371,7 @@ public class ValuationEngine {
         range(errors, "terminalGrowthRatePct", a.terminalGrowthRatePct(), BigDecimal.valueOf(-5), BigDecimal.valueOf(5), true);
         range(errors, "marginOfSafetyPct", a.marginOfSafetyPct(), BigDecimal.ZERO, BigDecimal.valueOf(50), true);
         if (a.taxRateOverridePct() != null) range(errors, "taxRateOverridePct", a.taxRateOverridePct(), BigDecimal.ZERO, BigDecimal.valueOf(40), true);
+        if (a.fcffCashInterestReference() != null) range(errors, "fcffCashInterestReference", a.fcffCashInterestReference(), BigDecimal.ZERO, null, true);
         if (a.projectionYears() == null || a.projectionYears() < 1 || a.projectionYears() > 20) errors.add("projectionYears must be between 1 and 20");
         if ("CUSTOM_PATH".equalsIgnoreCase(a.growthMode())) {
             if (a.annualGrowthRatesPct() == null || a.projectionYears() == null || a.annualGrowthRatesPct().size() != a.projectionYears())
@@ -321,6 +399,13 @@ public class ValuationEngine {
                 calculated.intrinsicValuePerShare(), calculated.marginOfSafetyPrice(), calculated.enterpriseValue(),
                 calculated.equityValue(), calculated.terminalValueWeightPct(), calculated.projection(),
                 calculated.warnings(), updatedAt, resolved, sources, overrides);
+    }
+
+    public ValuationScenarioResponse evaluateSettingsForMethod(String method, String type, String origin,
+                                                                ValuationAssumptions settings, Selection selection,
+                                                                MarketInputs market, GrowthInputs growthInputs,
+                                                                java.time.OffsetDateTime updatedAt) {
+        return evaluateSettings(type, origin, settings, selection.forMethod(method), market, growthInputs, updatedAt);
     }
 
     public ValuationScenarioResponse evaluate(String type, String origin, ValuationAssumptions a,
@@ -436,7 +521,7 @@ public class ValuationEngine {
                                       BigDecimal terminal, List<BigDecimal> path) {
         return new ValuationAssumptions(a.baseCashFlow(), initialGrowth, discount, terminal,
                 a.projectionYears(), a.marginOfSafetyPct(), a.taxRateOverridePct(), a.baseCashFlowMode(),
-                a.growthMode(), a.discountRateMode(), path, a.riskFreeRatePct(), a.beta(), a.equityRiskPremiumPct());
+                a.growthMode(), a.discountRateMode(), path, a.riskFreeRatePct(), a.beta(), a.equityRiskPremiumPct(), a.fcffWaccSelection(), a.fcffCashInterestReference());
     }
 
     private List<BigDecimal> annualTtmCashFlows(List<Quarter> rows, String model, BigDecimal tax, boolean sustainableGrowth) {
@@ -527,7 +612,8 @@ public class ValuationEngine {
     private BigDecimal waccPct(List<Quarter> latest, BigDecimal marketCap, BigDecimal debt, BigDecimal tax,
                                BigDecimal coePct, boolean immaterialDebt) {
         if (coePct == null || marketCap == null || marketCap.signum() <= 0) return null;
-        if (debt == null || debt.signum() <= 0 || immaterialDebt) return coePct;
+        if (debt == null) return null;
+        if (debt.signum() <= 0 || immaterialDebt) return coePct;
         BigDecimal interest = sumRequired(latest, Quarter::interestExpense);
         BigDecimal startDebt = latest.get(0).debt(), endDebt = latest.get(latest.size() - 1).debt();
         if (interest == null || startDebt == null || endDebt == null) return null;
@@ -552,8 +638,13 @@ public class ValuationEngine {
     }
 
     private Selection unavailable(List<Quarter> rows, List<String> missing) {
+        List<String> distinct = missing.stream().distinct().toList();
+        List<MethodSelection> methods = List.of(
+                new MethodSelection("FCFF", null, null, null, null, null, null, 0, List.of(), distinct, List.of()),
+                new MethodSelection("FCFE", null, null, null, null, null, null, 0, List.of(), distinct, List.of())
+        );
         return new Selection(null, null, null, null, null, null, null, null,
-                null, null, null, null, 0, List.of(), missing.stream().distinct().toList(), List.of(), rows);
+                null, null, null, null, 0, List.of(), distinct, List.of(), rows, methods);
     }
 
     private ValuationScenarioResponse invalid(String type, String origin, ValuationAssumptions a, String model,
@@ -571,6 +662,20 @@ public class ValuationEngine {
     private BigDecimal relativeDifferencePct(BigDecimal a, BigDecimal b) {
         BigDecimal denominator = a.abs().max(b.abs());
         return denominator.signum() == 0 ? BigDecimal.ZERO : a.subtract(b).abs().divide(denominator, MC).multiply(ONE_HUNDRED);
+    }
+
+    /** Cross-model variance is anchored to FCFF equity value, the primary enterprise-value method. */
+    public BigDecimal crossModelDifferencePct(BigDecimal fcffEquityValue, BigDecimal fcfeEquityValue) {
+        if (fcffEquityValue == null || fcfeEquityValue == null || fcffEquityValue.signum() == 0) return null;
+        return fcffEquityValue.subtract(fcfeEquityValue).abs().divide(fcffEquityValue.abs(), MC)
+                .multiply(ONE_HUNDRED).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    public String crossModelReadiness(BigDecimal differencePct, BigDecimal fcffValue, BigDecimal fcfeValue) {
+        if (fcffValue == null || fcfeValue == null || differencePct == null) return "UNAVAILABLE";
+        if (differencePct.compareTo(BigDecimal.TEN) <= 0) return "READY";
+        if (differencePct.compareTo(BigDecimal.valueOf(25)) <= 0) return "READY_WITH_CAVEATS";
+        return "NOT_READY";
     }
 
     private BigDecimal sumRequired(List<Quarter> rows, Function<Quarter, BigDecimal> getter) {
@@ -614,6 +719,8 @@ public class ValuationEngine {
         result.put("projectionYears", "USER_INPUT");
         result.put("marginOfSafetyPct", "USER_INPUT");
         if (settings.taxRateOverridePct() != null) result.put("taxRate", "USER_OVERRIDE");
+        if (settings.fcffWaccSelection() != null) result.put("fcffWaccSelection", "EXTERNAL_REFERENCE_SNAPSHOT");
+        if (settings.fcffCashInterestReference() != null) result.put("fcffCashInterestReference", "USER_ASSUMPTION");
         return Map.copyOf(result);
     }
     private BigDecimal multiply(BigDecimal a, BigDecimal b) { return a == null || b == null ? null : a.multiply(b, MC); }

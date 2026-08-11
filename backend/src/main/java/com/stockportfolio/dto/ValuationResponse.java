@@ -25,10 +25,35 @@ public record ValuationResponse(
         Map<String, Object> grossMargin,
         List<Diagnostic> diagnostics,
         List<String> missingFields,
-        Map<String, FieldSourceResponse> fieldSources
+        Map<String, FieldSourceResponse> fieldSources,
+        String calculationMode,
+        String readiness,
+        ValuationMethodsResponse valuationMethods,
+        CrossModelReconciliationResponse crossModelReconciliation,
+        DebtBreakdownResponse debtBreakdown,
+        NetBorrowingBreakdownResponse netBorrowingBreakdown,
+        DiscountRateBreakdownResponse discountRateBreakdown,
+        List<ScenarioDriverBridgeResponse> scenarioDriverBridge,
+        CashFlowBridgeResponse cashFlowBridge,
+        FundamentalsFreshness fundamentalsFreshness
 ) {
+    public ValuationResponse(String symbol, String engineVersion, LocalDate calculationDate, LocalDate priceDate,
+                             LocalDate financialDate, LocalDate filingDate, LocalDate cpiDate,
+                             Applicability applicability, DataQuality dataQuality, String selectedModel,
+                             Overview overview, List<ValuationScenarioResponse> scenarios,
+                             List<GrowthReferenceResponse> growthReferences, CapeSummary cape,
+                             Map<String, Object> cashFlow, Map<String, Object> capitalEfficiency,
+                             Map<String, Object> grossMargin, List<Diagnostic> diagnostics,
+                             List<String> missingFields, Map<String, FieldSourceResponse> fieldSources) {
+        this(symbol, engineVersion, calculationDate, priceDate, financialDate, filingDate, cpiDate,
+                applicability, dataQuality, selectedModel, overview, scenarios, growthReferences, cape,
+                cashFlow, capitalEfficiency, grossMargin, diagnostics, missingFields, fieldSources,
+                "DUAL_TRACK", "UNAVAILABLE", null, null, null, null, null, List.of(), null, null);
+    }
     public record Applicability(boolean applicable, String status, List<String> reasons) { }
     public record DataQuality(String grade, List<String> reasons) { }
+    public record FundamentalsFreshness(String status, LocalDate financialDate, LocalDate filingDate,
+                                        Long financialAgeDays, Long filingAgeDays, List<String> reasons) { }
     public record Overview(
             BigDecimal bearValue,
             BigDecimal baseValue,

@@ -1,0 +1,35 @@
+{
+  "facts": {
+    "us-gaap": {
+      "DebtCurrent": {
+        "units": {
+          "USD": [
+            {"end":"2025-03-30","val":4470000000,"accn":"pfe-original","fy":2025,"fp":"Q1","form":"10-Q","filed":"2025-05-05"},
+            {"end":"2025-03-30","val":9999999999,"accn":"pfe-comparative","fy":2026,"fp":"Q1","form":"10-Q","filed":"2026-05-05"}
+          ]
+        }
+      },
+      "CommercialPaper": {
+        "units": {
+          "USD": [
+            {"end":"2025-03-30","val":155000000,"accn":"pfe-original","fy":2025,"fp":"Q1","form":"10-Q","filed":"2025-05-05"}
+          ]
+        }
+      },
+      "LongTermDebtCurrent": {
+        "units": {
+          "USD": [
+            {"end":"2025-03-30","val":3749000000,"accn":"pfe-original","fy":2025,"fp":"Q1","form":"10-Q","filed":"2025-05-05"}
+          ]
+        }
+      },
+      "LongTermDebtNoncurrent": {
+        "units": {
+          "USD": [
+            {"end":"2025-03-30","val":57639000000,"accn":"pfe-original","fy":2025,"fp":"Q1","form":"10-Q","filed":"2025-05-05"}
+          ]
+        }
+      }
+    }
+  }
+}

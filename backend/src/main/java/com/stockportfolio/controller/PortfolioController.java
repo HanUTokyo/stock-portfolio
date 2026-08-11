@@ -13,7 +13,9 @@ import com.stockportfolio.dto.PortfolioSummaryResponse;
 import com.stockportfolio.dto.PortfolioExportResponse;
 import com.stockportfolio.dto.PortfolioExportV2Response;
 import com.stockportfolio.dto.QuarterlyFundamentalPointResponse;
+import com.stockportfolio.dto.SecDebtRebuildResponse;
 import com.stockportfolio.service.PortfolioService;
+import com.stockportfolio.service.SecDebtRebuildService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -28,9 +30,11 @@ import java.util.List;
 public class PortfolioController {
 
     private final PortfolioService portfolioService;
+    private final SecDebtRebuildService secDebtRebuildService;
 
-    public PortfolioController(PortfolioService portfolioService) {
+    public PortfolioController(PortfolioService portfolioService, SecDebtRebuildService secDebtRebuildService) {
         this.portfolioService = portfolioService;
+        this.secDebtRebuildService = secDebtRebuildService;
     }
 
     @GetMapping("/holdings")
@@ -90,6 +94,15 @@ public class PortfolioController {
             @RequestParam(defaultValue = "15") int years
     ) {
         return portfolioService.backfillMissingFundamentals(symbols, years, "MANUAL_FUNDAMENTALS_BACKFILL_MISSING");
+    }
+
+    @PostMapping("/history/fundamentals/rebuild-sec-debt-fields")
+    public SecDebtRebuildResponse rebuildSecDebtFields(
+            @RequestParam(required = false) String symbols,
+            @RequestParam(defaultValue = "15") int years,
+            @RequestParam(defaultValue = "true") boolean dryRun
+    ) {
+        return secDebtRebuildService.rebuild(symbols, years, dryRun, "MANUAL_SEC_DEBT_REBUILD");
     }
 
     @GetMapping("/history/prices")

@@ -117,6 +117,27 @@ class SecCompanyFactsServiceTest {
         assertPoint(points.get(1), LocalDate.of(2009, 6, 27), "-0.49");
     }
 
+    @Test
+    void readYtdConceptDoesNotCombineNonConsecutiveMissingQuarterIntoNextQuarter() throws Exception {
+        JsonNode usGaap = objectMapper.valueToTree(Map.of(
+                "EarningsPerShareBasic", Map.of(
+                        "units", Map.of(
+                                "USD/shares", List.of(
+                                        fact("Q1", "10-Q", "2024-04-30", "2023-12-31", "2024-03-30", "0.08"),
+                                        fact("Q3", "10-Q", "2024-10-30", "2023-12-31", "2024-09-28", "0.72"),
+                                        fact("FY", "10-K", "2025-02-05", "2023-12-31", "2024-12-28", "1.01")
+                                )
+                        )
+                )
+        ));
+
+        List<?> points = invokeReadYtdConcept(usGaap);
+
+        assertEquals(2, points.size());
+        assertPoint(points.get(0), LocalDate.of(2024, 3, 30), "0.08");
+        assertPoint(points.get(1), LocalDate.of(2024, 12, 28), "0.29");
+    }
+
     private List<?> invokeReadYtdConcept(JsonNode usGaap) throws Exception {
         return invokeReadYtdConcept(usGaap, 2024);
     }

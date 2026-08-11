@@ -8,8 +8,11 @@ import com.stockportfolio.model.EconomicObservation;
 import com.stockportfolio.model.Position;
 import com.stockportfolio.model.PriceHistory;
 import com.stockportfolio.model.ValuationScenario;
+import com.stockportfolio.model.SecDebtEvidence;
 import com.stockportfolio.model.StockSplit;
 import com.stockportfolio.repository.*;
+import com.stockportfolio.valuation.explicit.ExplicitOperatingForecastResult;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +25,7 @@ import java.time.OffsetDateTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.temporal.TemporalAdjusters;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.function.Function;
 
@@ -45,6 +49,16 @@ public class ValuationService {
     private final ValuationEngine engine;
     private final RealCapeCalculator realCapeCalculator;
     private final YahooFinancePriceService yahooFinancePriceService;
+    private SecCashFlowBridgeResolver cashFlowBridgeResolver = new SecCashFlowBridgeResolver();
+    private SecDebtEvidenceRepository debtEvidenceRepository;
+    private ExternalWaccReferenceService externalWaccReferenceService;
+    private ForecastArchitectureService forecastArchitectureService;
+
+    @Autowired(required = false)
+    void setCashFlowBridgeResolver(SecCashFlowBridgeResolver resolver) { this.cashFlowBridgeResolver = resolver; }
+    @Autowired(required = false) void setDebtEvidenceRepository(SecDebtEvidenceRepository repository) { this.debtEvidenceRepository = repository; }
+    @Autowired(required = false) void setExternalWaccReferenceService(ExternalWaccReferenceService service) { this.externalWaccReferenceService = service; }
+    @Autowired(required = false) void setForecastArchitectureService(ForecastArchitectureService service) { this.forecastArchitectureService = service; }
     private final ObjectMapper objectMapper;
     private final String engineVersion;
     private final BigDecimal equityRiskPremiumPct;
@@ -90,7 +104,21 @@ public class ValuationService {
         List<ValuationScenarioResponse> scenarios = SCENARIO_TYPES.stream()
                 .map(type -> scenario(type, context, null, false))
                 .toList();
-        return response(context, scenarios);
+        ForecastPreviewResponse explicit = forecastArchitectureService == null ? null
+                : forecastArchitectureService.savedPreview(context.symbol()).orElse(null);
+        return response(context, scenarios, explicit);
+    }
+
+    @Transactional(readOnly = true)
+    public WaccReferencesResponse waccReferences(String rawSymbol) {
+        Context context = context(rawSymbol, null);
+        return externalReferences(context);
+    }
+
+    public WaccReferencesResponse refreshWaccReferences(String rawSymbol) {
+        Context context = context(rawSymbol, null);
+        return externalWaccReferenceService == null ? externalReferences(context)
+                : externalWaccReferenceService.refresh(context.symbol(), systemWacc(context));
     }
 
     @Transactional
@@ -98,13 +126,18 @@ public class ValuationService {
         String type = scenarioType(request.scenarioType());
         ValuationAssumptions settings = request.assumptions() == null ? engine.defaultSettings(type) : engine.normalizeLegacy(request.assumptions());
         Context context = context(rawSymbol, settings.taxRateOverridePct());
-        ValuationScenarioResponse result = engine.evaluateSettings(type, "EVALUATED", settings,
+        ValuationScenarioResponse result = engine.evaluateSettings(type, "EVALUATED", compatibilitySettings(settings, context),
                 context.selection(), context.market(), context.growth().inputs(), null);
         if (!result.valid()) throw badRequest(result.warnings());
+        DualTrackBundle dualTrack = dualTrack(context, List.of(result));
+        ValuationMethodResponse compatibilityMethod = selectedMethodResponse(context.selection().model(), dualTrack.methods());
         return new ValuationEvaluationResponse(context.symbol(), engineVersion, result,
                 engine.sensitivity(type, result.resolvedAssumptions(), context.selection(), context.market()),
                 engine.reverse(type, result.resolvedAssumptions(), context.selection(), context.market()),
-                diagnostics(context, result));
+                diagnostics(context, result, dualTrack.reconciliation()), "DUAL_TRACK", dualTrack.readiness(),
+                dualTrack.methods(), dualTrack.reconciliation(), compatibilityMethod.debtBreakdown(),
+                compatibilityMethod.netBorrowingBreakdown(), compatibilityMethod.discountRateBreakdown(),
+                compatibilityMethod.scenarioDriverBridge(), context.cashFlowBridge(), context.fundamentalsFreshness());
     }
 
     public ValuationScenarioResponse save(String rawSymbol, String rawType, ValuationSaveRequest request) {
@@ -114,7 +147,7 @@ public class ValuationService {
             throw new ResponseStatusException(BAD_REQUEST, "modelMode must be AUTO");
         ValuationAssumptions settings = request.assumptions() == null ? engine.defaultSettings(type) : engine.normalizeLegacy(request.assumptions());
         Context context = context(symbol, settings.taxRateOverridePct());
-        ValuationScenarioResponse evaluated = engine.evaluateSettings(type, "SAVED", settings,
+        ValuationScenarioResponse evaluated = engine.evaluateSettings(type, "SAVED", compatibilitySettings(settings, context),
                 context.selection(), context.market(), context.growth().inputs(), null);
         if (!evaluated.valid()) throw badRequest(evaluated.warnings());
         ValuationScenario entity = scenarioRepository.findBySymbolAndScenarioType(symbol, type).orElseGet(ValuationScenario::new);
@@ -122,11 +155,15 @@ public class ValuationService {
         entity.setScenarioType(type);
         entity.setModelMode("AUTO");
         entity.setEngineVersion(engineVersion);
+        entity.setAssumptionsSchemaVersion(settings.fcffWaccSelection() == null ? 2 : 3);
+        entity.setCashFlowBasisAtSave(context.selection().model());
+        entity.setMigrationStatus("CURRENT");
         try { entity.setAssumptionsJson(objectMapper.writeValueAsString(settings)); }
         catch (JsonProcessingException e) { throw new ResponseStatusException(BAD_REQUEST, "Invalid assumptions", e); }
         ValuationScenario saved = scenarioRepository.save(entity);
-        return engine.evaluateSettings(type, "SAVED", settings, context.selection(), context.market(),
+        ValuationScenarioResponse response = engine.evaluateSettings(type, "SAVED", compatibilitySettings(settings, context), context.selection(), context.market(),
                 context.growth().inputs(), saved.getUpdatedAt());
+        return withMigrationMetadata(response, saved, "CURRENT");
     }
 
     public ValuationScenarioResponse reset(String rawSymbol, String rawType) {
@@ -140,6 +177,11 @@ public class ValuationService {
     }
 
     private ValuationResponse response(Context c, List<ValuationScenarioResponse> scenarios) {
+        return response(c, scenarios, null);
+    }
+
+    private ValuationResponse response(Context c, List<ValuationScenarioResponse> scenarios, ForecastPreviewResponse explicit) {
+        if (explicit != null) return explicitResponse(c, explicit);
         Map<String, ValuationScenarioResponse> byType = new HashMap<>();
         scenarios.forEach(s -> byType.put(s.scenarioType(), s));
         BigDecimal bear = value(byType.get("BEAR"));
@@ -147,13 +189,446 @@ public class ValuationService {
         BigDecimal bull = value(byType.get("BULL"));
         BigDecimal low = bear == null || bull == null ? null : bear.min(bull);
         BigDecimal high = bear == null || bull == null ? null : bear.max(bull);
-        ValuationResponse.DataQuality quality = quality(c, scenarios);
-        List<ValuationResponse.Diagnostic> diagnostics = diagnostics(c, byType.get("BASE"));
+        DualTrackBundle dualTrack = dualTrack(c, scenarios);
+        String compatibilityModel = dualTrack.methods().fcff().available() ? "FCFF"
+                : dualTrack.methods().fcfe().available() ? "FCFE" : "UNAVAILABLE";
+        ValuationMethodResponse compatibilityMethod = selectedMethodResponse(compatibilityModel, dualTrack.methods());
+        ValuationResponse.DataQuality quality = quality(c, scenarios, dualTrack.reconciliation());
+        List<ValuationResponse.Diagnostic> diagnostics = diagnostics(c, byType.get("BASE"), dualTrack.reconciliation());
         return new ValuationResponse(c.symbol(), engineVersion, LocalDate.now(marketZone), c.priceDate(),
                 c.financialDate(), c.filingDate(), c.cape().cpiDate(), c.applicability(), quality,
-                c.selection().model(), new ValuationResponse.Overview(bear, base, bull, low, high, c.market().currentPrice()),
-                scenarios, c.growth().references(), c.cape().summary(), cashFlow(c), capitalEfficiency(c), grossMargin(c), diagnostics,
-                c.selection().missingFields(), c.fieldSources());
+                compatibilityModel, new ValuationResponse.Overview(bear, base, bull, low, high, c.market().currentPrice()),
+                scenarios, c.growth().references(), c.cape().summary(), cashFlow(c, compatibilityModel), capitalEfficiency(c), grossMargin(c), diagnostics,
+                c.selection().missingFields(), c.fieldSources(), "DUAL_TRACK", dualTrack.readiness(),
+                dualTrack.methods(), dualTrack.reconciliation(), compatibilityMethod.debtBreakdown(),
+                compatibilityMethod.netBorrowingBreakdown(), compatibilityMethod.discountRateBreakdown(),
+                compatibilityMethod.scenarioDriverBridge(), c.cashFlowBridge(), c.fundamentalsFreshness());
+    }
+
+    private ValuationMethodResponse selectedMethodResponse(String selectedModel, ValuationMethodsResponse methods) {
+        return "FCFE".equalsIgnoreCase(selectedModel) ? methods.fcfe() : methods.fcff();
+    }
+
+    /** Turns a user-confirmed Forecast 3.0 snapshot into the canonical valuation response. */
+    private ValuationResponse explicitResponse(Context c, ForecastPreviewResponse preview) {
+        List<ValuationScenarioResponse> fcff = explicitScenarios("FCFF", preview);
+        List<ValuationScenarioResponse> fcfe = explicitScenarios("FCFE", preview);
+        CrossModelReconciliationResponse reconciliation = reconcile("FCFF", fcff, fcfe, null);
+        List<String> explicitWarnings = new ArrayList<>(preview.missingInputs());
+        explicitWarnings.add("EXPLICIT_OPERATING_FORECAST: user-confirmed Forecast 3.0 snapshot is the active valuation basis.");
+        ValuationMethodResponse fcffMethod = explicitMethod("FCFF", c, fcff, preview, explicitWarnings);
+        ValuationMethodResponse fcfeMethod = explicitMethod("FCFE", c, fcfe, preview, explicitWarnings);
+        ValuationMethodsResponse methods = new ValuationMethodsResponse(fcffMethod, fcfeMethod);
+        Map<String, ValuationScenarioResponse> byType = byScenarioType(fcff);
+        BigDecimal bear = value(byType.get("BEAR")), base = value(byType.get("BASE")), bull = value(byType.get("BULL"));
+        BigDecimal low = bear == null || bull == null ? null : bear.min(bull);
+        BigDecimal high = bear == null || bull == null ? null : bear.max(bull);
+        List<ValuationResponse.Diagnostic> diagnostics = new ArrayList<>(diagnostics(c, byType.get("BASE"), reconciliation));
+        diagnostics.add(new ValuationResponse.Diagnostic("FORECAST_3_ACTIVE", "info",
+                "A saved explicit operating forecast is the active valuation basis.", preview.templateVersion()));
+        return new ValuationResponse(c.symbol(), engineVersion, LocalDate.now(marketZone), c.priceDate(), c.financialDate(), c.filingDate(),
+                c.cape().cpiDate(), c.applicability(), quality(c, fcff, reconciliation), "FCFF",
+                new ValuationResponse.Overview(bear, base, bull, low, high, c.market().currentPrice()), fcff,
+                c.growth().references(), c.cape().summary(), cashFlow(c, preview), capitalEfficiency(c), grossMargin(c), diagnostics,
+                c.selection().missingFields(), c.fieldSources(), "DUAL_TRACK_EXPLICIT_OPERATING_FORECAST", reconciliation.readiness(),
+                methods, reconciliation, fcffMethod.debtBreakdown(), fcffMethod.netBorrowingBreakdown(), fcffMethod.discountRateBreakdown(),
+                List.of(), c.cashFlowBridge(), c.fundamentalsFreshness());
+    }
+
+    private List<ValuationScenarioResponse> explicitScenarios(String method, ForecastPreviewResponse preview) {
+        return SCENARIO_TYPES.stream().map(type -> {
+            ExplicitOperatingForecastResult result = preview.scenarios().get(type);
+            ExplicitOperatingForecastResult.ValuationTrack track = "FCFF".equals(method) ? result.fcff() : result.fcfe();
+            BigDecimal perShare = track.equityValue().divide(preview.sharesOutstanding(), ValuationEngine.MC).setScale(4, RoundingMode.HALF_UP);
+            List<ValuationScenarioResponse.ProjectionPoint> projection = track.discountedCashFlows().stream()
+                    .map(point -> new ValuationScenarioResponse.ProjectionPoint(point.year(), null, point.cashFlow(), point.discountFactor(), point.presentValue())).toList();
+            return new ValuationScenarioResponse(type, "AUTO", method, "FORECAST_3_SAVED", null, true, perShare, null,
+                    track.enterpriseValue(), track.equityValue(), null, projection,
+                    List.of("EXPLICIT_OPERATING_FORECAST: saved user-confirmed snapshot."), null, null,
+                    Map.of("forecastMode", "SAVED_SNAPSHOT"), List.of(), "CURRENT", engineVersion, engineVersion);
+        }).toList();
+    }
+
+    private ValuationMethodResponse explicitMethod(String method, Context c, List<ValuationScenarioResponse> scenarios,
+                                                   ForecastPreviewResponse preview, List<String> warnings) {
+        ExplicitOperatingForecastResult base = preview.scenarios().get("BASE");
+        ExplicitOperatingForecastResult.ValuationTrack track = "FCFF".equals(method) ? base.fcff() : base.fcfe();
+        return new ValuationMethodResponse(method, true, "PARTIAL", "PARTIAL",
+                track.cashFlowDefinition(), null, track.discountRateType(), "EXPLICIT_OPERATING_FORECAST",
+                "FCFF".equals(method) ? "SAVED_EXPLICIT_NET_DEBT_BRIDGE" : "SAVED_DEBT_FINANCING_POLICY",
+                null, null,
+                null, track.discountRate().multiply(BigDecimal.valueOf(100)), null,
+                debtBreakdown(c), netBorrowingBreakdown(c), discountRateBreakdown(method, c), List.of(), List.of(), scenarios,
+                null, null, preview.missingInputs(), warnings);
+    }
+
+    private DualTrackBundle dualTrack(Context c, List<ValuationScenarioResponse> compatibilityScenarios) {
+        List<ValuationScenarioResponse> fcffScenarios = scenariosForMethod("FCFF", c, compatibilityScenarios);
+        boolean completeNetBorrowingEvidence = hasCompleteNetBorrowingEvidence(c);
+        List<ValuationScenarioResponse> fcfeScenarios = completeNetBorrowingEvidence
+                ? scenariosForMethod("FCFE", c, compatibilityScenarios) : List.of();
+        ValuationMethodResponse fcff = methodResponse("FCFF", c, fcffScenarios, true);
+        ValuationMethodResponse fcfe = methodResponse("FCFE", c, fcfeScenarios, completeNetBorrowingEvidence);
+        ValuationMethodsResponse methods = new ValuationMethodsResponse(fcff, fcfe);
+        CrossModelReconciliationResponse reconciliation = reconcile(c.selection().model(),
+                "INCOMPLETE".equals(c.cashFlowBridge().coverageStatus()) ? List.of() : fcffScenarios, fcfeScenarios,
+                fcff.definitionCrossCheckDifferencePct());
+        String readiness = "STALE_FUNDAMENTALS".equals(c.fundamentalsFreshness().status()) ? "NOT_READY" : reconciliation.readiness();
+        if (!readiness.equals(reconciliation.readiness())) {
+            List<String> warnings = new ArrayList<>(reconciliation.warnings());
+            warnings.add("STALE_FUNDAMENTALS: valuation cash-flow inputs are beyond the permitted reporting age.");
+            reconciliation = new CrossModelReconciliationResponse(readiness, reconciliation.comparabilityStatus(), reconciliation.baseDifferencePct(), reconciliation.scenarios(), warnings);
+        }
+        return new DualTrackBundle(methods, reconciliation, readiness);
+    }
+
+    private List<ValuationScenarioResponse> scenariosForMethod(String method, Context c,
+                                                               List<ValuationScenarioResponse> compatibilityScenarios) {
+        return compatibilityScenarios.stream().map(source -> {
+            if (method.equalsIgnoreCase(source.selectedModel())) return source;
+            ValuationAssumptions settings = source.assumptions() == null
+                    ? engine.defaultSettings(source.scenarioType()) : source.assumptions();
+            if ("FCFF".equals(method)) settings = applyExternalFcffWacc(settings);
+            ValuationEngine.Selection selection = selectionForMethod(method, c, settings);
+            return engine.evaluateSettings(source.scenarioType(), source.origin(), settings, selection,
+                    c.market(), c.growth().inputs(), source.updatedAt());
+        }).toList();
+    }
+
+    private WaccReferencesResponse externalReferences(Context context) {
+        if (externalWaccReferenceService == null)
+            return new WaccReferencesResponse(context.symbol(), systemWacc(context), List.of());
+        return externalWaccReferenceService.references(context.symbol(), systemWacc(context));
+    }
+
+    private BigDecimal systemWacc(Context context) {
+        ValuationEngine.MethodSelection fcff = context.selection().methodSelection("FCFF");
+        return fcff == null ? null : fcff.automaticDiscountRatePct();
+    }
+
+    /** A selection is a serialized snapshot; never re-read the mutable external cache while evaluating a saved scenario. */
+    private ValuationAssumptions applyExternalFcffWacc(ValuationAssumptions settings) {
+        WaccReferenceSelection selected = settings == null ? null : settings.fcffWaccSelection();
+        if (selected == null || selected.ratePct() == null || "SYSTEM_ESTIMATE".equals(selected.provider())
+                || selected.ratePct().compareTo(BigDecimal.valueOf(2)) < 0 || selected.ratePct().compareTo(BigDecimal.valueOf(30)) > 0)
+            return settings;
+        return new ValuationAssumptions(settings.baseCashFlow(), settings.initialGrowthRatePct(), selected.ratePct(),
+                settings.terminalGrowthRatePct(), settings.projectionYears(), settings.marginOfSafetyPct(), settings.taxRateOverridePct(),
+                settings.baseCashFlowMode(), settings.growthMode(), "MANUAL_RATE", settings.annualGrowthRatesPct(),
+                settings.riskFreeRatePct(), settings.beta(), settings.equityRiskPremiumPct(), selected, settings.fcffCashInterestReference());
+    }
+
+    private ValuationAssumptions compatibilitySettings(ValuationAssumptions settings, Context context) {
+        return "FCFF".equals(context.selection().model()) ? applyExternalFcffWacc(settings) : settings;
+    }
+
+    /**
+     * A selected public WACC may be used with the explicitly labelled cash-FCFF reference.
+     * This is intentionally an INDICATIVE view: it never makes the economic NOPAT bridge COMPLETE.
+     */
+    private ValuationEngine.Selection selectionForMethod(String method, Context context, ValuationAssumptions settings) {
+        BigDecimal cashReference = cashFcffReference(context, settings);
+        if (!"FCFF".equals(method) || !hasExternalWacc(settings) || cashReference == null || cashReference.signum() <= 0) {
+            return context.selection().forMethod(method);
+        }
+        BigDecimal rate = settings.fcffWaccSelection().ratePct();
+        return new ValuationEngine.Selection("FCFF", cashReference, cashReference, context.growth().inputs().autoGrowthPct(), rate,
+                context.selection().taxRatePct(), context.cashFlowBridge().reconciliationDifferencePct(),
+                context.selection().netDebt(), context.selection().debt(), context.selection().cash(),
+                context.selection().shortTermInvestments(), context.selection().noncurrentMarketableSecurities(),
+                context.selection().growthSampleCount(), context.selection().historicalGrowthComponentsPct(), List.of(),
+                List.of("INDICATIVE_FCFF: external WACC selected with CASH_FCFF_REFERENCE_ONLY; economic FCFF bridge remains incomplete."),
+                context.selection().quarters(), context.selection().methodSelections());
+    }
+
+    private boolean hasExternalWacc(ValuationAssumptions settings) {
+        WaccReferenceSelection selection = settings == null ? null : settings.fcffWaccSelection();
+        return selection != null && selection.ratePct() != null && !"SYSTEM_ESTIMATE".equals(selection.provider())
+                && selection.ratePct().compareTo(BigDecimal.valueOf(2)) >= 0 && selection.ratePct().compareTo(BigDecimal.valueOf(30)) <= 0;
+    }
+
+    private BigDecimal cashFcffReference(Context context, ValuationAssumptions settings) {
+        if (settings == null || settings.fcffCashInterestReference() == null
+                || settings.fcffCashInterestReference().signum() < 0 || context.selection().taxRatePct() == null) return null;
+        BigDecimal cfo = latestFourSum(context.selection().quarters(), ValuationEngine.Quarter::cfo);
+        BigDecimal capex = latestFourSum(context.selection().quarters(), ValuationEngine.Quarter::capex);
+        if (cfo == null || capex == null) return null;
+        BigDecimal afterTaxInterest = settings.fcffCashInterestReference().multiply(
+                BigDecimal.ONE.subtract(context.selection().taxRatePct().divide(BigDecimal.valueOf(100), ValuationEngine.MC)), ValuationEngine.MC);
+        return cfo.subtract(capex, ValuationEngine.MC).add(afterTaxInterest, ValuationEngine.MC);
+    }
+
+    private ValuationMethodResponse methodResponse(String method, Context c,
+                                                   List<ValuationScenarioResponse> scenarios,
+                                                   boolean completeFinancingEvidence) {
+        ValuationEngine.MethodSelection selected = c.selection().methodSelection(method);
+        List<String> missing = selected == null ? List.of("methodSelection") : selected.missingInputs();
+        boolean bridgeIncomplete = "FCFF".equals(method) && c.cashFlowBridge() != null
+                && !"COMPLETE".equals(c.cashFlowBridge().coverageStatus());
+        boolean indicativeCashReference = "FCFF".equals(method) && bridgeIncomplete && !scenarios.isEmpty()
+                && scenarios.stream().anyMatch(ValuationScenarioResponse::valid);
+        boolean financingEvidenceIncomplete = "FCFE".equals(method) && !completeFinancingEvidence;
+        if (financingEvidenceIncomplete) missing = concatStrings(missing, List.of("completeNetBorrowingEvidence"));
+        boolean allValid = !bridgeIncomplete && !financingEvidenceIncomplete && selected != null && selected.available() && !scenarios.isEmpty()
+                && scenarios.stream().allMatch(ValuationScenarioResponse::valid);
+        boolean someValid = !bridgeIncomplete && !financingEvidenceIncomplete && selected != null && selected.available()
+                && scenarios.stream().anyMatch(ValuationScenarioResponse::valid);
+        boolean operatingBridgeGap = "FCFF".equals(method) && selected != null
+                && selected.definitionCrossCheckDifferencePct() != null
+                && selected.definitionCrossCheckDifferencePct().compareTo(BigDecimal.TEN) > 0;
+        if (bridgeIncomplete) missing = concatStrings(missing, c.cashFlowBridge().missingInputs());
+        String availability = indicativeCashReference || (bridgeIncomplete && "FCFF".equals(method) && selected != null && selected.available())
+                ? "INDICATIVE" : bridgeIncomplete || financingEvidenceIncomplete ? "UNAVAILABLE" : allValid ? (operatingBridgeGap ? "PARTIAL" : "AVAILABLE")
+                : someValid ? "PARTIAL" : "UNAVAILABLE";
+        List<String> warnings = new ArrayList<>();
+        if (selected != null) warnings.addAll(selected.warnings());
+        if (bridgeIncomplete) warnings.addAll(c.cashFlowBridge().warnings());
+        if (indicativeCashReference) {
+            warnings.add("INDICATIVE_FCFF: external WACC is applied to CASH_FCFF_REFERENCE_ONLY; this result is excluded from cross-model readiness.");
+        } else if (bridgeIncomplete && "FCFF".equals(method) && selected != null && selected.available()) {
+            warnings.add("INDICATIVE_FCFF: WACC uses cash-interest fallback where accrued interest is unavailable; this result is excluded from cross-model readiness.");
+        }
+        if (financingEvidenceIncomplete) warnings.add("FCFE is unavailable because the latest four quarters do not each have COMPLETE SEC net-borrowing evidence.");
+        scenarios.stream().flatMap(s -> s.warnings().stream()).forEach(warnings::add);
+        ValuationScenarioResponse baseScenario = scenarios.stream()
+                .filter(scenario -> "BASE".equals(scenario.scenarioType()) && scenario.valid())
+                .findFirst().orElse(null);
+        ValuationEvaluationResponse.Sensitivity sensitivity = bridgeIncomplete || financingEvidenceIncomplete || baseScenario == null ? null
+                : engine.sensitivity("BASE", baseScenario.resolvedAssumptions(), c.selection().forMethod(method), c.market());
+        ValuationEvaluationResponse.ReverseDcf reverseDcf = bridgeIncomplete || financingEvidenceIncomplete || baseScenario == null ? null
+                : engine.reverse("BASE", baseScenario.resolvedAssumptions(), c.selection().forMethod(method), c.market());
+        String fcff = "FCFF";
+        return new ValuationMethodResponse(method, allValid || indicativeCashReference, availability, availability,
+                fcff.equals(method) ? "EBIT × (1 - cash operating tax rate) + D&A - capex - delta operating NWC"
+                        : "CFO - capex + reported total net borrowing",
+                fcff.equals(method) ? "CFO + after-tax interest - capex (cash reference only)"
+                        : "FCFF - after-tax interest + reported total net borrowing",
+                fcff.equals(method) ? "WACC" : "COST_OF_EQUITY",
+                "LEGACY_CASH_FLOW_FADE",
+                fcff.equals(method) ? "REPORTED_NET_DEBT_WITH_MARKETABLE_SECURITIES"
+                        : "REPORTED_TOTAL_NET_BORROWING",
+                indicativeCashReference ? baseScenario.resolvedAssumptions().baseCashFlow() : bridgeIncomplete && fcff.equals(method) ? null : selected == null ? null : selected.latestTtmCashFlow(),
+                selected == null ? null : selected.crossCheckTtmCashFlow(),
+                indicativeCashReference ? baseScenario.resolvedAssumptions().baseCashFlow() : bridgeIncomplete && fcff.equals(method) ? null : selected == null ? null : selected.normalizedBaseCashFlow(),
+                indicativeCashReference ? baseScenario == null || baseScenario.resolvedAssumptions() == null ? null : baseScenario.resolvedAssumptions().discountRatePct() : selected == null ? null : selected.automaticDiscountRatePct(),
+                selected == null ? null : selected.definitionCrossCheckDifferencePct(),
+                debtBreakdown(c), netBorrowingBreakdown(c), discountRateBreakdown(method, c),
+                scenarioDriverBridge(selected, scenarios), growthProvenance(scenarios, c), scenarios, sensitivity, reverseDcf, missing,
+                warnings.stream().filter(Objects::nonNull).distinct().toList());
+    }
+
+    private List<GrowthProvenanceResponse> growthProvenance(List<ValuationScenarioResponse> scenarios, Context c) {
+        return scenarios.stream().map(scenario -> {
+            ValuationAssumptions assumptions = scenario.resolvedAssumptions();
+            String mode = assumptions == null || assumptions.growthMode() == null ? "AUTO_BLEND" : assumptions.growthMode();
+            String source = switch (mode) {
+                case "AUTO_BLEND" -> "SHARED_AUTO_BLEND";
+                case "HISTORICAL" -> "SHARED_HISTORICAL";
+                case "CONSENSUS" -> "SHARED_CONSENSUS";
+                default -> scenario.assumptionSources() != null && "USER_OVERRIDE".equals(scenario.assumptionSources().get("initialGrowthRatePct"))
+                        ? "USER_OVERRIDE" : mode;
+            };
+            List<String> fallbacks = new ArrayList<>();
+            if ("AUTO_BLEND".equals(mode) && c.growth().inputs().historicalGrowthPct() == null) fallbacks.add("historicalGrowthUnavailable");
+            if ("AUTO_BLEND".equals(mode) && c.growth().inputs().consensusGrowthPct() == null) fallbacks.add("consensusGrowthUnavailable");
+            String reason = "Shared operating forecast used by FCFF and FCFE; method-specific historical cash-flow growth is excluded.";
+            if (!fallbacks.isEmpty()) reason += " AUTO_BLEND falls back to the available shared reference.";
+            return new GrowthProvenanceResponse("legacy-shared-forecast-" + scenario.scenarioType().toLowerCase(Locale.ROOT),
+                    "COMPARABLE_SHARED_FORECAST", scenario.scenarioType(), mode,
+                    assumptions == null ? null : assumptions.initialGrowthRatePct(),
+                    assumptions == null ? null : assumptions.terminalGrowthRatePct(),
+                    c.growth().inputs().historicalGrowthPct(), c.growth().inputs().consensusGrowthPct(), source,
+                    reason, List.copyOf(fallbacks));
+        }).toList();
+    }
+
+    private DebtBreakdownResponse debtBreakdown(Context c) {
+        List<SecDebtEvidence> evidence = debtEvidence("BALANCE", c);
+        if (!evidence.isEmpty()) {
+            LocalDate end = evidence.get(evidence.size()-1).getPeriodEnd(); List<SecDebtEvidence> latest = evidence.stream().filter(e -> end.equals(e.getPeriodEnd())).toList();
+            return new DebtBreakdownResponse("COMPLETE".equals(latest.getFirst().getCoverageStatus()) ? "AVAILABLE" : "INCOMPLETE", c.selection().debt(), amount(latest,"COMMERCIAL_PAPER"), amount(latest,"CURRENT_TERM_DEBT"), amount(latest,"NONCURRENT_TERM_DEBT"), amount(latest,"OTHER_SHORT_TERM"), c.selection().cash(),c.selection().shortTermInvestments(),c.selection().noncurrentMarketableSecurities(),c.selection().netDebt(),List.of(),latest.getFirst().getCoverageStatus(),latest.getFirst().getSelectedRoute(),end,latest.getFirst().getFiledDate(),components(latest),tokens(latest,true),tokens(latest,false),List.of());
+        }
+        List<String> missing = new ArrayList<>();
+        if (c.selection().debt() == null) missing.add("totalDebt");
+        if (c.selection().cash() == null) missing.add("cashAndEquivalents");
+        missing.addAll(List.of("commercialPaper", "currentTermDebt", "noncurrentTermDebt", "otherDebtLikeItems"));
+        String status = c.selection().debt() == null || c.selection().cash() == null ? "UNAVAILABLE" : "INCOMPLETE";
+        return new DebtBreakdownResponse(status, c.selection().debt(), null, null, null, null,
+                c.selection().cash(), c.selection().shortTermInvestments(),
+                c.selection().noncurrentMarketableSecurities(), c.selection().netDebt(), missing);
+    }
+
+    private NetBorrowingBreakdownResponse netBorrowingBreakdown(Context c) {
+        List<SecDebtEvidence> evidence = debtEvidence("NET_BORROWING", c);
+        if (!evidence.isEmpty()) { LocalDate end=evidence.get(evidence.size()-1).getPeriodEnd(); List<SecDebtEvidence> latest=evidence.stream().filter(e->end.equals(e.getPeriodEnd())).toList(); return new NetBorrowingBreakdownResponse("COMPLETE".equals(latest.getFirst().getCoverageStatus())?"AVAILABLE":"INCOMPLETE",latestFourSum(c.selection().quarters(),ValuationEngine.Quarter::netBorrowing),amount(latest,"COMMERCIAL_PAPER"),amount(latest,"OTHER_SHORT_TERM"),amount(latest,"LONG_TERM"),List.of(),latest.getFirst().getCoverageStatus(),latest.getFirst().getSelectedRoute(),end,components(latest),tokens(latest,true),tokens(latest,false),latest.getFirst().getQuarterizationMethod(),List.of()); }
+        BigDecimal total = latestFourSum(c.selection().quarters(), ValuationEngine.Quarter::netBorrowing);
+        List<String> missing = new ArrayList<>(List.of("commercialPaperNetBorrowing",
+                "otherShortTermNetBorrowing", "longTermNetBorrowing"));
+        if (total == null) missing.add("totalNetBorrowing");
+        return new NetBorrowingBreakdownResponse(total == null ? "UNAVAILABLE" : "INCOMPLETE",
+                total, null, null, null, missing);
+    }
+
+    private List<SecDebtEvidence> debtEvidence(String metric, Context c) { if (debtEvidenceRepository==null || c.selection().quarters().isEmpty()) return List.of(); LocalDate to=c.selection().quarters().getLast().periodEnd(); return debtEvidenceRepository.findBySymbolAndMetricTypeAndPeriodEndBetweenOrderByPeriodEndAsc(c.symbol(),metric,to.minusYears(2),to); }
+    private boolean hasCompleteNetBorrowingEvidence(Context c) {
+        List<ValuationEngine.Quarter> quarters = c.selection().quarters();
+        if (quarters.size() < 4) return false;
+        List<LocalDate> latestFour = quarters.subList(quarters.size() - 4, quarters.size()).stream()
+                .map(ValuationEngine.Quarter::periodEnd).toList();
+        Map<LocalDate, List<SecDebtEvidence>> byPeriod = debtEvidence("NET_BORROWING", c).stream()
+                .collect(java.util.stream.Collectors.groupingBy(SecDebtEvidence::getPeriodEnd));
+        return latestFour.stream().allMatch(period -> {
+            List<SecDebtEvidence> rows = byPeriod.get(period);
+            return rows != null && !rows.isEmpty()
+                    && rows.stream().allMatch(row -> "COMPLETE".equals(row.getCoverageStatus()));
+        });
+    }
+    private BigDecimal amount(List<SecDebtEvidence> rows,String type){ return rows.stream().filter(e->type.equals(e.getComponentType())).map(SecDebtEvidence::getAmount).reduce(BigDecimal.ZERO,BigDecimal::add); }
+    private List<DebtComponentResponse> components(List<SecDebtEvidence> rows){ return rows.stream().map(e->new DebtComponentResponse(e.getComponentType(),e.getAmount(),split(e.getSourceConcepts()),split(e.getAccessionNumbers()))).toList(); }
+    private List<String> tokens(List<SecDebtEvidence> rows,boolean concepts){ return rows.stream().flatMap(e->(concepts?split(e.getSourceConcepts()):split(e.getAccessionNumbers())).stream()).distinct().toList(); }
+    private List<String> split(String value){ return value==null||value.isBlank()?List.of():List.of(value.split(",")); }
+
+    private DiscountRateBreakdownResponse discountRateBreakdown(String method, Context c) {
+        BigDecimal riskFree = c.market().riskFreeRatePct();
+        BigDecimal beta = c.market().beta();
+        BigDecimal erp = c.market().equityRiskPremiumPct();
+        BigDecimal coe = riskFree == null || beta == null || erp == null
+                ? null : riskFree.add(beta.multiply(erp, ValuationEngine.MC), ValuationEngine.MC);
+        ValuationEngine.MethodSelection selected = c.selection().methodSelection(method);
+        BigDecimal discount = selected == null ? null : selected.automaticDiscountRatePct();
+        List<String> missing = new ArrayList<>();
+        if (riskFree == null) missing.add("riskFreeRatePct");
+        if (beta == null) missing.add("beta");
+        if (erp == null) missing.add("equityRiskPremiumPct");
+        if ("FCFE".equals(method)) {
+            if (discount == null) missing.add("costOfEquityPct");
+            return new DiscountRateBreakdownResponse(missing.isEmpty() ? "AVAILABLE" : "UNAVAILABLE",
+                    "COST_OF_EQUITY", rate(riskFree), rate(beta), rate(erp), rate(coe),
+                    null, null, null, null, rate(discount), missing);
+        }
+
+        BigDecimal debt = c.selection().debt();
+        BigDecimal marketCap = c.market().currentPrice() == null || c.market().sharesOutstanding() == null
+                ? null : c.market().currentPrice().multiply(c.market().sharesOutstanding(), ValuationEngine.MC);
+        BigDecimal preTaxDebt = null;
+        BigDecimal afterTaxDebt = null;
+        BigDecimal equityWeight = null;
+        BigDecimal debtWeight = null;
+        if (debt == null) missing.add("totalDebt");
+        if (marketCap == null || marketCap.signum() <= 0) missing.add("marketCapitalization");
+        if (debt != null && marketCap != null && marketCap.signum() > 0) {
+            boolean immaterial = debt.signum() <= 0
+                    || debt.divide(marketCap, ValuationEngine.MC).compareTo(new BigDecimal("0.01")) < 0;
+            BigDecimal totalCapital = marketCap.add(debt.max(BigDecimal.ZERO), ValuationEngine.MC);
+            equityWeight = marketCap.divide(totalCapital, ValuationEngine.MC).multiply(BigDecimal.valueOf(100));
+            debtWeight = debt.max(BigDecimal.ZERO).divide(totalCapital, ValuationEngine.MC).multiply(BigDecimal.valueOf(100));
+            if (immaterial) {
+                preTaxDebt = BigDecimal.ZERO;
+                afterTaxDebt = BigDecimal.ZERO;
+            } else {
+                BigDecimal interest = latestFourSum(c.selection().quarters(), ValuationEngine.Quarter::interestExpense);
+                BigDecimal averageDebt = averageLatestFourDebt(c.selection().quarters());
+                if (interest == null) missing.add("interestExpense");
+                if (averageDebt == null || averageDebt.signum() <= 0) missing.add("averageDebt");
+                if (interest != null && averageDebt != null && averageDebt.signum() > 0) {
+                    preTaxDebt = interest.abs().divide(averageDebt, ValuationEngine.MC)
+                            .multiply(BigDecimal.valueOf(100));
+                    BigDecimal tax = c.selection().taxRatePct() == null ? null
+                            : c.selection().taxRatePct().divide(BigDecimal.valueOf(100), ValuationEngine.MC);
+                    if (tax == null) missing.add("taxRate");
+                    else afterTaxDebt = preTaxDebt.multiply(BigDecimal.ONE.subtract(tax), ValuationEngine.MC);
+                }
+            }
+        }
+        if (discount == null) missing.add("waccPct");
+        return new DiscountRateBreakdownResponse(missing.isEmpty() ? "AVAILABLE" : "INCOMPLETE", "WACC",
+                rate(riskFree), rate(beta), rate(erp), rate(coe), rate(preTaxDebt), rate(afterTaxDebt),
+                rate(equityWeight), rate(debtWeight), rate(discount), missing.stream().distinct().toList());
+    }
+
+    private List<ScenarioDriverBridgeResponse> scenarioDriverBridge(ValuationEngine.MethodSelection method,
+                                                                    List<ValuationScenarioResponse> scenarios) {
+        BigDecimal normalized = method == null ? null : method.normalizedBaseCashFlow();
+        return scenarios.stream().map(scenario -> {
+            ValuationAssumptions resolved = scenario.resolvedAssumptions();
+            BigDecimal start = resolved == null ? null : resolved.baseCashFlow();
+            BigDecimal adjustment = normalized == null || normalized.signum() == 0 || start == null ? null
+                    : start.subtract(normalized, ValuationEngine.MC).divide(normalized.abs(), ValuationEngine.MC)
+                    .multiply(BigDecimal.valueOf(100)).setScale(4, RoundingMode.HALF_UP);
+            List<String> warnings = adjustment != null && adjustment.signum() != 0
+                    ? List.of("Scenario starting cash flow differs from the normalized method base due to an explicit override.")
+                    : List.of();
+            return new ScenarioDriverBridgeResponse(scenario.scenarioType(), "LEGACY_CASH_FLOW_FADE",
+                    normalized, start, adjustment, resolved == null ? null : resolved.initialGrowthRatePct(),
+                    resolved == null ? null : resolved.discountRatePct(),
+                    resolved == null ? null : resolved.terminalGrowthRatePct(),
+                    resolved == null ? null : resolved.projectionYears(), warnings);
+        }).toList();
+    }
+
+    private CrossModelReconciliationResponse reconcile(String selectedModel,
+                                                        List<ValuationScenarioResponse> fcff,
+                                                        List<ValuationScenarioResponse> fcfe,
+                                                        BigDecimal fcffOperatingBridgeGapPct) {
+        Map<String, ValuationScenarioResponse> fcffByType = byScenarioType(fcff);
+        Map<String, ValuationScenarioResponse> fcfeByType = byScenarioType(fcfe);
+        List<String> types = new ArrayList<>();
+        SCENARIO_TYPES.forEach(type -> {
+            if (fcffByType.containsKey(type) || fcfeByType.containsKey(type)) types.add(type);
+        });
+        List<CrossModelReconciliationResponse.Scenario> scenarios = types.stream().map(type -> {
+            ValuationScenarioResponse fcffScenario = fcffByType.get(type);
+            ValuationScenarioResponse fcfeScenario = fcfeByType.get(type);
+            BigDecimal fcffValue = value(fcffScenario);
+            BigDecimal fcfeValue = value(fcfeScenario);
+            BigDecimal difference = engine.crossModelDifferencePct(fcffValue, fcfeValue);
+            String readiness = engine.crossModelReadiness(difference, fcffValue, fcfeValue);
+            String primary = "FCFE".equalsIgnoreCase(selectedModel) ? "FCFE" : "FCFF";
+            BigDecimal primaryValue = "FCFF".equals(primary) ? fcffValue : fcfeValue;
+            BigDecimal crossValue = "FCFF".equals(primary) ? fcfeValue : fcffValue;
+            List<String> warnings = "UNAVAILABLE".equals(readiness)
+                    ? List.of("Both FCFF and FCFE must be available for cross-model reconciliation.")
+                    : "NOT_READY".equals(readiness)
+                    ? List.of("FCFF and FCFE differ by more than 25%.")
+                    : "READY_WITH_CAVEATS".equals(readiness)
+                    ? List.of("FCFF and FCFE differ by more than 10%.") : List.of();
+            return new CrossModelReconciliationResponse.Scenario(type, primary, primaryValue,
+                    "FCFF".equals(primary) ? "FCFE" : "FCFF", crossValue, difference, readiness, warnings);
+        }).toList();
+        CrossModelReconciliationResponse.Scenario base = scenarios.stream()
+                .filter(s -> "BASE".equals(s.scenarioType())).findFirst()
+                .orElse(scenarios.isEmpty() ? null : scenarios.getFirst());
+        ValuationScenarioResponse baseFcff = base == null ? null : fcffByType.get(base.scenarioType());
+        ValuationScenarioResponse baseFcfe = base == null ? null : fcfeByType.get(base.scenarioType());
+        boolean fcffAvailable = value(baseFcff) != null;
+        boolean fcfeAvailable = value(baseFcfe) != null;
+        String readiness = fcffAvailable && fcfeAvailable ? base.readiness()
+                : fcffAvailable || fcfeAvailable ? "READY_WITH_CAVEATS" : "NOT_READY";
+        List<String> topWarnings = new ArrayList<>(scenarios.stream()
+                .flatMap(s -> s.warnings().stream()).distinct().toList());
+        if (fcffAvailable ^ fcfeAvailable) {
+            topWarnings.add("Only one DCF method is available; valuation can be used only with caveats.");
+        } else if (!fcffAvailable && !fcfeAvailable) {
+            topWarnings.add("Neither FCFF nor FCFE is available; valuation is not ready.");
+        }
+        if (fcffOperatingBridgeGapPct != null && fcffOperatingBridgeGapPct.compareTo(BigDecimal.TEN) > 0) {
+            if ("READY".equals(readiness)) readiness = "READY_WITH_CAVEATS";
+            topWarnings.add("FCFF operating reconstruction exceeds the 10% bridge tolerance; do not treat the dual-track result as fully ready.");
+        }
+        return new CrossModelReconciliationResponse(readiness, "COMPARABLE_SHARED_FORECAST", base == null ? null : base.differencePct(),
+                scenarios, topWarnings.stream().distinct().toList());
+    }
+
+    private Map<String, ValuationScenarioResponse> byScenarioType(List<ValuationScenarioResponse> scenarios) {
+        LinkedHashMap<String, ValuationScenarioResponse> result = new LinkedHashMap<>();
+        scenarios.forEach(scenario -> result.put(scenario.scenarioType(), scenario));
+        return result;
+    }
+
+    private List<String> concatStrings(List<String> left, List<String> right) {
+        ArrayList<String> values = new ArrayList<>(left == null ? List.of() : left);
+        if (right != null) values.addAll(right);
+        return values.stream().filter(Objects::nonNull).distinct().toList();
     }
 
     private Context context(String rawSymbol, BigDecimal taxOverridePct) {
@@ -164,9 +639,9 @@ public class ValuationService {
         List<EarningsHistory> raw = earningsRepository.findBySymbolAndAsOfDateBetweenOrderByAsOfDateAsc(symbol, today.minusYears(16), today);
         Map<String, Map<String, Object>> corrections = reviewedDataResolver.correctedValues("fundamentals", raw.stream().map(EarningsHistory::getId).toList());
         Set<String> rejected = reviewedDataResolver.rejectedRecordIds("fundamentals", raw.stream().map(EarningsHistory::getId).toList());
-        List<EarningsHistory> acceptedRows = raw.stream()
+        List<EarningsHistory> acceptedRows = canonicalQuarterRows(raw.stream()
                 .filter(row -> !rejected.contains(String.valueOf(row.getId())))
-                .toList();
+                .toList());
         List<ValuationEngine.Quarter> quarters = acceptedRows.stream()
                 .map(row -> quarter(row, corrections.getOrDefault(String.valueOf(row.getId()), Map.of())))
                 .toList();
@@ -182,17 +657,51 @@ public class ValuationService {
         ValuationEngine.MarketInputs market = new ValuationEngine.MarketInputs(currentPrice,
                 position.getEffectiveSharesOutstanding(), assumptions.riskFreeRate(), beta, equityRiskPremiumPct);
         ValuationEngine.Selection selection = engine.select(quarters, market, taxOverridePct);
+        CashFlowBridgeResponse cashFlowBridge = cashFlowBridgeResolver.resolve(symbol, quarters, selection.taxRatePct());
         GrowthBundle growth = growth(symbol, selection);
         ValuationResponse.Applicability applicability = applicability(position, quarters, selection);
         List<StockSplit> splits = stockSplits(symbol, today.minusYears(20), today);
         CapeComputation cape = cape(position, quarters, prices, currentPrice, priceDate, isOperatingCompany(position), splits);
         LocalDate financialDate = quarters.isEmpty() ? null : quarters.get(quarters.size() - 1).periodEnd();
         LocalDate filingDate = quarters.stream().map(ValuationEngine.Quarter::filingDate).filter(Objects::nonNull).max(LocalDate::compareTo).orElse(null);
+        ValuationResponse.FundamentalsFreshness fundamentalsFreshness = fundamentalsFreshness(today, financialDate, filingDate);
         EarningsHistory latestAccepted = acceptedRows.isEmpty() ? null : acceptedRows.get(acceptedRows.size() - 1);
         Map<String, Object> latestOverrides = latestAccepted == null ? Map.of()
                 : corrections.getOrDefault(String.valueOf(latestAccepted.getId()), Map.of());
-        return new Context(symbol, position, quarters, prices, market, selection, growth, applicability, cape, priceDate,
+        return new Context(symbol, position, quarters, prices, market, selection, growth, applicability, cape, cashFlowBridge, fundamentalsFreshness, priceDate,
                 financialDate, filingDate, valuationFieldSources(latestAccepted, latestOverrides));
+    }
+
+    private List<EarningsHistory> canonicalQuarterRows(List<EarningsHistory> rows) {
+        Map<LocalDate, EarningsHistory> canonical = new LinkedHashMap<>();
+        for (EarningsHistory row : rows) {
+            if (row.getAsOfDate() == null) continue;
+            EarningsHistory current = canonical.get(row.getAsOfDate());
+            if (current == null || comparePublication(row, current) > 0) canonical.put(row.getAsOfDate(), row);
+        }
+        return canonical.values().stream().sorted(Comparator.comparing(EarningsHistory::getAsOfDate)).toList();
+    }
+
+    private int comparePublication(EarningsHistory left, EarningsHistory right) {
+        LocalDate leftFiled = left.getFilingDate() == null ? LocalDate.MIN : left.getFilingDate();
+        LocalDate rightFiled = right.getFilingDate() == null ? LocalDate.MIN : right.getFilingDate();
+        int filed = leftFiled.compareTo(rightFiled);
+        if (filed != 0) return filed;
+        return Long.compare(left.getId() == null ? Long.MIN_VALUE : left.getId(), right.getId() == null ? Long.MIN_VALUE : right.getId());
+    }
+
+    private ValuationResponse.FundamentalsFreshness fundamentalsFreshness(LocalDate asOf, LocalDate financialDate, LocalDate filingDate) {
+        List<String> reasons = new ArrayList<>();
+        Long financialAge = financialDate == null ? null : ChronoUnit.DAYS.between(financialDate, asOf);
+        Long filingAge = filingDate == null ? null : ChronoUnit.DAYS.between(filingDate, asOf);
+        if (financialDate == null) reasons.add("No canonical financial period is available.");
+        else if (financialDate.isAfter(asOf)) reasons.add("Latest financial period is after the valuation date.");
+        else if (financialAge > 135) reasons.add("Latest financial period is " + financialAge + " days old; limit is 135 days.");
+        if (filingDate == null) reasons.add("No SEC filing date is available for the selected fundamentals.");
+        else if (filingDate.isAfter(asOf)) reasons.add("Latest filing date is after the valuation date.");
+        else if (filingAge > 120) reasons.add("Latest filing is " + filingAge + " days old; limit is 120 days.");
+        String status = reasons.isEmpty() ? "CURRENT" : "STALE_FUNDAMENTALS";
+        return new ValuationResponse.FundamentalsFreshness(status, financialDate, filingDate, financialAge, filingAge, List.copyOf(reasons));
     }
 
     private ValuationScenarioResponse scenario(String type, Context c, ValuationAssumptions direct, boolean forceDefault) {
@@ -204,8 +713,36 @@ public class ValuationService {
             catch (JsonProcessingException ignored) { }
         }
         if (assumptions == null) assumptions = engine.defaultSettings(type);
-        return engine.evaluateSettings(type, origin, assumptions, c.selection(), c.market(), c.growth().inputs(),
+        ValuationScenarioResponse evaluated = engine.evaluateSettings(type, origin, compatibilitySettings(assumptions, c), c.selection(), c.market(), c.growth().inputs(),
                 persisted == null ? null : persisted.getUpdatedAt());
+        if (persisted == null) return evaluated;
+        boolean versionChanged = persisted.getEngineVersion() != null && !engineVersion.equals(persisted.getEngineVersion());
+        boolean basisChanged = persisted.getCashFlowBasisAtSave() == null
+                || !Objects.equals(persisted.getCashFlowBasisAtSave(), c.selection().model());
+        boolean manual = evaluated.manualOverrides() != null && !evaluated.manualOverrides().isEmpty();
+        String migrationStatus = versionChanged && basisChanged && manual ? "REVIEW_REQUIRED" : "CURRENT";
+        if ("REVIEW_REQUIRED".equals(migrationStatus)) {
+            List<String> warnings = new ArrayList<>(evaluated.warnings());
+            warnings.add("Saved manual assumptions were created on a different cash-flow basis and require review.");
+            evaluated = new ValuationScenarioResponse(evaluated.scenarioType(), evaluated.modelMode(),
+                    evaluated.selectedModel(), "REVIEW_REQUIRED", evaluated.assumptions(), false,
+                    evaluated.intrinsicValuePerShare(), evaluated.marginOfSafetyPrice(), evaluated.enterpriseValue(),
+                    evaluated.equityValue(), evaluated.terminalValueWeightPct(), evaluated.projection(), warnings,
+                    evaluated.updatedAt(), evaluated.resolvedAssumptions(), evaluated.assumptionSources(),
+                    evaluated.manualOverrides());
+        }
+        return withMigrationMetadata(evaluated, persisted, migrationStatus);
+    }
+
+    private ValuationScenarioResponse withMigrationMetadata(ValuationScenarioResponse response,
+                                                             ValuationScenario persisted,
+                                                             String migrationStatus) {
+        return new ValuationScenarioResponse(response.scenarioType(), response.modelMode(), response.selectedModel(),
+                response.origin(), response.assumptions(), response.valid(), response.intrinsicValuePerShare(),
+                response.marginOfSafetyPrice(), response.enterpriseValue(), response.equityValue(),
+                response.terminalValueWeightPct(), response.projection(), response.warnings(), response.updatedAt(),
+                response.resolvedAssumptions(), response.assumptionSources(), response.manualOverrides(),
+                migrationStatus, persisted.getEngineVersion(), engineVersion);
     }
 
     private ValuationResponse.Applicability applicability(Position p, List<ValuationEngine.Quarter> quarters, ValuationEngine.Selection selection) {
@@ -268,7 +805,8 @@ public class ValuationService {
         }
     }
 
-    private ValuationResponse.DataQuality quality(Context c, List<ValuationScenarioResponse> scenarios) {
+    private ValuationResponse.DataQuality quality(Context c, List<ValuationScenarioResponse> scenarios,
+                                                  CrossModelReconciliationResponse reconciliation) {
         if (!c.applicability().applicable()) return new ValuationResponse.DataQuality("Unavailable", c.applicability().reasons());
         List<String> reasons = new ArrayList<>();
         BigDecimal diff = c.selection().crossCheckDifferencePct();
@@ -277,6 +815,20 @@ public class ValuationService {
         else if (diff.compareTo(BigDecimal.valueOf(25)) > 0) { grade = "Low"; reasons.add("FCFF definitions differ by more than 25%."); }
         else if (diff.compareTo(BigDecimal.TEN) > 0) { grade = "Medium"; reasons.add("FCFF definitions differ by 10%–25%."); }
         if (c.selection().warnings().stream().anyMatch(w -> w.contains("Severe"))) grade = "Low";
+        if (reconciliation != null && "NOT_READY".equals(reconciliation.readiness())) {
+            grade = "Low";
+            reasons.add(reconciliation.baseDifferencePct() == null
+                    ? "Neither FCFF nor FCFE BASE valuation is available."
+                    : "FCFF and FCFE BASE values differ by more than 25%.");
+        } else if (reconciliation != null && "READY_WITH_CAVEATS".equals(reconciliation.readiness())) {
+            if ("High".equals(grade)) grade = "Medium";
+            reasons.add(reconciliation.baseDifferencePct() == null
+                    ? "Only one DCF method is available for the BASE scenario."
+                    : "FCFF and FCFE BASE values differ by 10%–25%.");
+        } else if (reconciliation != null && "UNAVAILABLE".equals(reconciliation.readiness())) {
+            if ("High".equals(grade)) grade = "Medium";
+            reasons.add("Cross-model reconciliation is unavailable.");
+        }
         if (scenarios.stream().anyMatch(s -> s.manualOverrides() != null && !s.manualOverrides().isEmpty())) {
             grade = "Low";
             reasons.add("One or more scenarios use key user overrides.");
@@ -349,12 +901,34 @@ public class ValuationService {
         return sum.signum() <= 0 ? null : price.divide(sum, 4, RoundingMode.HALF_UP);
     }
 
-    private Map<String, Object> cashFlow(Context c) {
+    private Map<String, Object> cashFlow(Context c) { return cashFlow(c, c.selection().model()); }
+
+    private Map<String, Object> cashFlow(Context c, String model) {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-        result.put("model", c.selection().model());
+        result.put("model", model);
         result.put("latestTtmCashFlow", c.selection().latestTtmCashFlow());
         result.put("baseCashFlow", c.selection().baseCashFlow());
         result.put("crossCheckDifferencePct", c.selection().crossCheckDifferencePct());
+        result.put("netDebt", c.selection().netDebt());
+        result.put("debt", c.selection().debt());
+        result.put("cash", c.selection().cash());
+        result.put("shortTermInvestments", c.selection().shortTermInvestments());
+        result.put("noncurrentMarketableSecurities", c.selection().noncurrentMarketableSecurities());
+        return result;
+    }
+
+    /** Explicit forecasts have Year 1 forecast cash flow, not a historical TTM or legacy base cash flow. */
+    private Map<String, Object> cashFlow(Context c, ForecastPreviewResponse preview) {
+        ExplicitOperatingForecastResult base = preview.scenarios().get("BASE");
+        ExplicitOperatingForecastResult.ValuationTrack fcff = base.fcff();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("model", "EXPLICIT_OPERATING_FORECAST");
+        result.put("forecastMode", "EXPLICIT_OPERATING_FORECAST");
+        result.put("cashFlowDefinition", fcff.cashFlowDefinition());
+        result.put("latestTtmCashFlow", null);
+        result.put("baseCashFlow", null);
+        result.put("baseYear1ForecastCashFlow", fcff.discountedCashFlows().isEmpty() ? null : fcff.discountedCashFlows().getFirst().cashFlow());
+        result.put("terminalYearForecastCashFlow", fcff.discountedCashFlows().isEmpty() ? null : fcff.discountedCashFlows().getLast().cashFlow());
         result.put("netDebt", c.selection().netDebt());
         result.put("debt", c.selection().debt());
         result.put("cash", c.selection().cash());
@@ -488,16 +1062,39 @@ public class ValuationService {
         return result;
     }
 
-    private List<ValuationResponse.Diagnostic> diagnostics(Context c, ValuationScenarioResponse base) {
+    private List<ValuationResponse.Diagnostic> diagnostics(Context c, ValuationScenarioResponse base,
+                                                            CrossModelReconciliationResponse reconciliation) {
         List<ValuationResponse.Diagnostic> result = new ArrayList<>();
         for (String reason : c.applicability().reasons()) result.add(new ValuationResponse.Diagnostic("NOT_APPLICABLE", "critical", reason, c.symbol()));
+        if ("STALE_FUNDAMENTALS".equals(c.fundamentalsFreshness().status())) {
+            result.add(new ValuationResponse.Diagnostic("STALE_FUNDAMENTALS", "critical",
+                    "Valuation uses fundamentals outside the permitted reporting-age window.",
+                    String.join(" ", c.fundamentalsFreshness().reasons())));
+        }
+        if (c.cashFlowBridge() != null && !"COMPLETE".equals(c.cashFlowBridge().coverageStatus())) {
+            result.add(new ValuationResponse.Diagnostic("FCFF_ECONOMIC_BRIDGE_INCOMPLETE", "critical",
+                    "Economic FCFF is not available until the indirect-CFO bridge is sourced from non-overlapping SEC filing statement relationships.",
+                    "coverage=" + c.cashFlowBridge().coverageStatus() + "; residual=" + c.cashFlowBridge().residual()));
+        }
         if (c.selection().crossCheckDifferencePct() != null && c.selection().crossCheckDifferencePct().compareTo(BigDecimal.TEN) > 0)
-            result.add(new ValuationResponse.Diagnostic("FCFF_DEFINITION_CONFLICT",
+            result.add(new ValuationResponse.Diagnostic("FCFF_OPERATING_BRIDGE_GAP",
                     c.selection().crossCheckDifferencePct().compareTo(BigDecimal.valueOf(25)) > 0 ? "critical" : "warning",
-                    "FCFF definitions do not reconcile within 10%.", c.selection().crossCheckDifferencePct() + "%"));
+                    "Reported-cash FCFF and the incomplete NOPAT operating reconstruction do not reconcile within 10%.",
+                    c.selection().crossCheckDifferencePct() + "%"));
         if (base != null && base.terminalValueWeightPct() != null && base.terminalValueWeightPct().compareTo(BigDecimal.valueOf(70)) >= 0)
             result.add(new ValuationResponse.Diagnostic("HIGH_TERMINAL_VALUE_WEIGHT", "warning",
                     "Valuation is highly dependent on terminal value.", base.terminalValueWeightPct() + "%"));
+        if (reconciliation != null && reconciliation.baseDifferencePct() != null
+                && ("READY_WITH_CAVEATS".equals(reconciliation.readiness())
+                || "NOT_READY".equals(reconciliation.readiness()))) {
+            result.add(new ValuationResponse.Diagnostic("CROSS_MODEL_RECONCILIATION",
+                    "NOT_READY".equals(reconciliation.readiness()) ? "critical" : "warning",
+                    "FCFF and FCFE BASE values do not reconcile within 10%.",
+                    reconciliation.baseDifferencePct() + "%"));
+        } else if (reconciliation != null && reconciliation.baseDifferencePct() == null) {
+            result.add(new ValuationResponse.Diagnostic("CROSS_MODEL_RECONCILIATION_UNAVAILABLE", "info",
+                    "Both FCFF and FCFE are required for cross-model reconciliation.", c.symbol()));
+        }
         Map<String, Object> capital = capitalEfficiency(c);
         if (Boolean.TRUE.equals(capital.get("buybackDistortion"))) result.add(new ValuationResponse.Diagnostic(
                 "ROE_BUYBACK_DISTORTION", "warning", "High ROE may be distorted by buybacks or a small equity base.", "TTM ROE=" + capital.get("ttmRoePct")));
@@ -511,7 +1108,8 @@ public class ValuationService {
                 reviewedDataResolver.decimal(o, "dilutedEps", h.getDilutedEps()), reviewedDataResolver.decimal(o, "cashFlow", h.getCashFlow()),
                 reviewedDataResolver.decimal(o, "capex", h.getCapex()), reviewedDataResolver.decimal(o, "interestExpense", h.getInterestExpense()),
                 reviewedDataResolver.decimal(o, "netBorrowing", h.getNetBorrowing()), reviewedDataResolver.decimal(o, "depreciationAmortization", h.getDepreciationAmortization()),
-                reviewedDataResolver.decimal(o, "changeInWorkingCapital", h.getChangeInWorkingCapital()), reviewedDataResolver.decimal(o, "operatingIncome", h.getOperatingIncome()),
+                accountingDeltaNwc(reviewedDataResolver.decimal(o, "changeInWorkingCapital", h.getChangeInWorkingCapital())),
+                reviewedDataResolver.decimal(o, "operatingIncome", h.getOperatingIncome()),
                 reviewedDataResolver.decimal(o, "taxProvision", h.getTaxProvision()), reviewedDataResolver.decimal(o, "pretaxIncome", h.getPretaxIncome()),
                 reviewedDataResolver.decimal(o, "netIncome", h.getNetIncome()), reviewedDataResolver.decimal(o, "stockholdersEquity", h.getStockholdersEquity()),
                 reviewedDataResolver.decimal(o, "totalDebt", h.getTotalDebt()), reviewedDataResolver.decimal(o, "cashAndEquivalents", h.getCashAndEquivalents()),
@@ -520,6 +1118,11 @@ public class ValuationService {
                 reviewedDataResolver.decimal(o, "investedCapital", h.getInvestedCapital()), reviewedDataResolver.decimal(o, "revenue", h.getRevenue()),
                 reviewedDataResolver.decimal(o, "grossProfit", h.getGrossProfit()), reviewedDataResolver.decimal(o, "totalAssets", h.getTotalAssets()),
                 reviewedDataResolver.text(o, "currencyCode", h.getCurrencyCode()));
+    }
+
+    /** SEC/Yahoo stores the cash-flow-statement working-capital effect; DCF uses accounting ΔNWC. */
+    private BigDecimal accountingDeltaNwc(BigDecimal cashFlowStatementEffect) {
+        return cashFlowStatementEffect == null ? null : cashFlowStatementEffect.negate();
     }
 
     private BigDecimal priceAtOrBefore(List<PriceHistory> prices, LocalDate date) {
@@ -551,6 +1154,20 @@ public class ValuationService {
         return true;
     }
     private BigDecimal value(ValuationScenarioResponse r) { return r != null && r.valid() ? r.intrinsicValuePerShare() : null; }
+    private BigDecimal latestFourSum(List<ValuationEngine.Quarter> rows,
+                                     Function<ValuationEngine.Quarter, BigDecimal> getter) {
+        if (rows == null || rows.size() < 4) return null;
+        return sum(rows.subList(rows.size() - 4, rows.size()), getter);
+    }
+    private BigDecimal averageLatestFourDebt(List<ValuationEngine.Quarter> rows) {
+        if (rows == null || rows.size() < 4) return null;
+        BigDecimal start = rows.get(rows.size() - 4).debt();
+        BigDecimal end = rows.get(rows.size() - 1).debt();
+        return average(start, end);
+    }
+    private BigDecimal rate(BigDecimal value) {
+        return value == null ? null : value.setScale(4, RoundingMode.HALF_UP);
+    }
     private BigDecimal sum(List<ValuationEngine.Quarter> rows, Function<ValuationEngine.Quarter, BigDecimal> getter) {
         BigDecimal total = BigDecimal.ZERO; for (ValuationEngine.Quarter row : rows) { BigDecimal v = getter.apply(row); if (v == null) return null; total = total.add(v); } return total;
     }
@@ -567,7 +1184,7 @@ public class ValuationService {
     private record Context(String symbol, Position position, List<ValuationEngine.Quarter> quarters,
                            List<PriceHistory> prices, ValuationEngine.MarketInputs market,
                            ValuationEngine.Selection selection, GrowthBundle growth, ValuationResponse.Applicability applicability,
-                           CapeComputation cape, LocalDate priceDate, LocalDate financialDate, LocalDate filingDate,
+                           CapeComputation cape, CashFlowBridgeResponse cashFlowBridge, ValuationResponse.FundamentalsFreshness fundamentalsFreshness, LocalDate priceDate, LocalDate financialDate, LocalDate filingDate,
                            Map<String, FieldSourceResponse> fieldSources) { }
     private record CapeComputation(ValuationResponse.CapeSummary summary, LocalDate cpiDate) {
         static CapeComputation unavailable(String status, LocalDate cpiDate, List<String> missing) {
@@ -576,4 +1193,7 @@ public class ValuationService {
         }
     }
     private record GrowthBundle(ValuationEngine.GrowthInputs inputs, List<GrowthReferenceResponse> references) { }
+    private record DualTrackBundle(ValuationMethodsResponse methods,
+                                   CrossModelReconciliationResponse reconciliation,
+                                   String readiness) { }
 }
