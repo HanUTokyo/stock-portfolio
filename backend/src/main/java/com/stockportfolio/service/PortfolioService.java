@@ -17,6 +17,7 @@ import com.stockportfolio.model.PeHistory;
 import com.stockportfolio.model.Transaction;
 import com.stockportfolio.model.TransactionType;
 import com.stockportfolio.model.StockSplit;
+import com.stockportfolio.model.SecShareCountEvidence;
 import com.stockportfolio.repository.CashAdjustmentRepository;
 import com.stockportfolio.repository.DividendRepository;
 import com.stockportfolio.repository.EarningsEstimateRepository;
@@ -31,6 +32,7 @@ import com.stockportfolio.repository.PeHistoryRepository;
 import com.stockportfolio.repository.StockNoteRepository;
 import com.stockportfolio.repository.TransactionRepository;
 import com.stockportfolio.repository.StockSplitRepository;
+import com.stockportfolio.repository.SecShareCountEvidenceRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -86,6 +88,7 @@ public class PortfolioService {
     private final EarningsEstimateRepository earningsEstimateRepository;
     private final EarningsHistoryRepository earningsHistoryRepository;
     private final StockSplitRepository stockSplitRepository;
+    private final SecShareCountEvidenceRepository shareCountEvidenceRepository;
     private final NonGaapEpsHistoryRepository nonGaapEpsHistoryRepository;
     private final FundamentalNoteRepository fundamentalNoteRepository;
     private final FundamentalFactObservationRepository fundamentalFactObservationRepository;
@@ -108,6 +111,7 @@ public class PortfolioService {
             EarningsEstimateRepository earningsEstimateRepository,
             EarningsHistoryRepository earningsHistoryRepository,
             StockSplitRepository stockSplitRepository,
+            SecShareCountEvidenceRepository shareCountEvidenceRepository,
             NonGaapEpsHistoryRepository nonGaapEpsHistoryRepository,
             FundamentalNoteRepository fundamentalNoteRepository,
             FundamentalFactObservationRepository fundamentalFactObservationRepository,
@@ -129,6 +133,7 @@ public class PortfolioService {
         this.earningsEstimateRepository = earningsEstimateRepository;
         this.earningsHistoryRepository = earningsHistoryRepository;
         this.stockSplitRepository = stockSplitRepository;
+        this.shareCountEvidenceRepository = shareCountEvidenceRepository;
         this.nonGaapEpsHistoryRepository = nonGaapEpsHistoryRepository;
         this.fundamentalNoteRepository = fundamentalNoteRepository;
         this.fundamentalFactObservationRepository = fundamentalFactObservationRepository;
@@ -1681,8 +1686,29 @@ public class PortfolioService {
                 .map(observation -> toSharesOutstandingPoint(observation, splits))
                 .toList();
 
-        return new CapitalAllocationHistoryResponse(normalized, repurchases, shares);
+        return new CapitalAllocationHistoryResponse(normalized, repurchases, shares, shareCountBridges(normalized, fromDate, toDate));
     }
+
+    private List<ShareCountBridgeResponse> shareCountBridges(String symbol, LocalDate from, LocalDate to) {
+        List<SecShareCountEvidence> evidence = shareCountEvidenceRepository.findBySymbolAndPeriodEndBetweenOrderByPeriodEndAsc(symbol, from, to);
+        Map<String, List<SecShareCountEvidence>> groups = evidence.stream().collect(java.util.stream.Collectors.groupingBy(
+                row -> row.getPeriodStart() + "|" + row.getPeriodEnd() + "|" + row.getAccessionNumber(), LinkedHashMap::new, java.util.stream.Collectors.toList()));
+        return groups.values().stream().map(rows -> {
+            SecShareCountEvidence first = rows.getFirst();
+            BigDecimal beginning = shareAmount(rows, "BEGINNING_SHARES"), ending = shareAmount(rows, "ENDING_SHARES"), residual = shareAmount(rows, "RESIDUAL");
+            BigDecimal net = beginning == null || ending == null ? null : ending.subtract(beginning);
+            List<ShareCountBridgeResponse.Component> components = rows.stream()
+                    .filter(row -> !Set.of("BEGINNING_SHARES", "ENDING_SHARES", "RESIDUAL").contains(row.getComponentType()))
+                    .map(row -> new ShareCountBridgeResponse.Component(row.getComponentType(), row.getAmount(), splitCsv(row.getSourceConcepts()), row.getAccessionNumber())).toList();
+            List<String> warnings = "COMPLETE".equals(first.getCoverageStatus()) ? List.of()
+                    : List.of("SEC statement components do not fully reconcile; no missing component is inferred.", "This statement period is not directly comparable to the cover-page observation date.");
+            return new ShareCountBridgeResponse(first.getPeriodStart(), first.getPeriodEnd(), beginning, ending, net, residual,
+                    first.getCoverageStatus(), first.getAlignmentStatus(), first.getStatementRole(), first.getAccessionNumber(), first.getFiledDate(),
+                    first.getSplitAdjustmentFactor(), components, warnings);
+        }).toList();
+    }
+    private BigDecimal shareAmount(List<SecShareCountEvidence> rows, String type) { return rows.stream().filter(row -> type.equals(row.getComponentType())).map(SecShareCountEvidence::getAmount).filter(java.util.Objects::nonNull).findFirst().orElse(null); }
+    private List<String> splitCsv(String value) { return value == null || value.isBlank() ? List.of() : List.of(value.split(",")); }
 
     private BigDecimal trailingFourQuarterSum(List<BigDecimal> values, int currentIndex) {
         if (currentIndex < 3) return null;

@@ -1,0 +1,3 @@
+package com.stockportfolio.repository;
+import com.stockportfolio.model.SecDebtEvidence; import org.springframework.data.jpa.repository.JpaRepository; import java.time.LocalDate; import java.util.List;
+public interface SecDebtEvidenceRepository extends JpaRepository<SecDebtEvidence,Long>{ List<SecDebtEvidence> findBySymbolAndPeriodEndBetweenOrderByPeriodEndAsc(String symbol, LocalDate from, LocalDate to); List<SecDebtEvidence> findBySymbolAndMetricTypeAndPeriodEndBetweenOrderByPeriodEndAsc(String symbol,String metricType,LocalDate from,LocalDate to); void deleteBySymbolAndPeriodEndBetween(String symbol,LocalDate from,LocalDate to); }

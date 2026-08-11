@@ -7,7 +7,8 @@ import java.util.List;
 public record CapitalAllocationHistoryResponse(
         String symbol,
         List<ShareRepurchasePoint> shareRepurchases,
-        List<SharesOutstandingPoint> sharesOutstanding
+        List<SharesOutstandingPoint> sharesOutstanding,
+        List<ShareCountBridgeResponse> shareCountBridges
 ) {
     public record ShareRepurchasePoint(
             LocalDate fiscalPeriodEnd,

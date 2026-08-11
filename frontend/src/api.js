@@ -265,11 +265,39 @@ export function getValuation(symbol) {
   return request(`/valuations/${encodeURIComponent(symbol)}`);
 }
 
+export function getWaccReferences(symbol) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/wacc-references`);
+}
+
+export function refreshWaccReferences(symbol) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/wacc-references/refresh`, { method: 'POST' });
+}
+
 export function evaluateValuation(symbol, scenarioType, assumptions) {
   return request(`/valuations/${encodeURIComponent(symbol)}/evaluate`, {
     method: 'POST',
     body: JSON.stringify({ scenarioType, assumptions })
   });
+}
+
+export function getForecastTemplate(symbol) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/forecast-template`);
+}
+
+export function previewForecast(symbol, payload) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/forecast-preview`, {
+    method: 'POST', body: JSON.stringify(payload)
+  });
+}
+
+export function saveForecastSnapshot(symbol, payload) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/forecast-scenarios`, {
+    method: 'PUT', body: JSON.stringify(payload)
+  });
+}
+
+export function resetForecastSnapshot(symbol) {
+  return request(`/valuations/${encodeURIComponent(symbol)}/forecast-scenarios`, { method: 'DELETE' });
 }
 
 export function saveValuationScenario(symbol, scenarioType, assumptions) {

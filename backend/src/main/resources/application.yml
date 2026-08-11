@@ -43,5 +43,5 @@ app:
     cpi-csv-url: ${FRED_CPI_CSV_URL:https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL}
     cpi-cron: ${FRED_CPI_CRON:0 15 4 * * *}
   valuation:
-    engine-version: ${VALUATION_ENGINE_VERSION:valuation-java-2.0.0}
+    engine-version: ${VALUATION_ENGINE_VERSION:valuation-java-2.1.0}
     equity-risk-premium: ${VALUATION_EQUITY_RISK_PREMIUM:5.0}

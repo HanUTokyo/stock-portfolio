@@ -138,6 +138,12 @@ export default function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [dashboardBootstrapped, setDashboardBootstrapped] = useState(false);
+
+  useEffect(() => {
+    if (!actionResult) return undefined;
+    const timeoutId = window.setTimeout(() => setActionResult(''), 5000);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionResult]);
   const dashboardRequestRef = useRef(0);
   const isDataReviewRoute = location.pathname.startsWith('/admin/data-review');
 

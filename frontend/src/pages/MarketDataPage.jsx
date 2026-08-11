@@ -1293,16 +1293,21 @@ function CashFlowAnalysisPanel({ analysis }) {
 
 function CapitalAllocationPanel({ history }) {
   const { repurchases, shares, latestRepurchase, latestShares, yearAgoShares, yoyNetChange, tableRows } = calculateCapitalAllocationSummary(history);
+  const bridges = history?.shareCountBridges || [];
   const repurchaseChart = buildSingleSeriesChart(
     repurchases.map((row) => ({ asOfDate: row.fiscalPeriodEnd, amount: row.amount })),
     'amount'
   );
   const sharesChart = buildSharesOutstandingChart(shares);
+  const netShareChangeChart = buildSingleSeriesChart(
+    bridges.map((row) => ({ asOfDate: row.periodEnd, amount: row.netShareChange })),
+    'amount'
+  );
   const cards = [
-    ['Latest Quarterly Repurchase', formatLarge(latestRepurchase?.amount), 'cash paid for common-stock repurchases'],
-    ['TTM Repurchases', formatLarge(latestRepurchase?.ttmAmount), 'only shown when four reported quarters are continuous'],
-    ['Latest Shares Outstanding', formatLarge(latestShares?.sharesOutstanding), latestShares?.asOfDate ? `reported ${latestShares.asOfDate}` : 'SEC cover-page observation'],
-    ['YoY Net Share Change', yoyNetChange == null ? '--' : `${yoyNetChange >= 0 ? '+' : ''}${formatLarge(yoyNetChange)}`, yearAgoShares ? `vs. ${yearAgoShares.asOfDate}` : 'a comparable observation is unavailable']
+    ['Latest Repurchase Cash', formatLarge(latestRepurchase?.amount), 'USD cash paid for common-stock repurchases; not a share-count measure'],
+    ['TTM Repurchase Cash', formatLarge(latestRepurchase?.ttmAmount), 'USD; only shown when four reported quarters are continuous'],
+    ['Latest Common Shares Outstanding', formatLarge(latestShares?.sharesOutstanding), latestShares?.asOfDate ? `SEC cover-page observation: ${latestShares.asOfDate}` : 'not public float'],
+    ['YoY Net Common-Share Change', yoyNetChange == null ? '--' : `${yoyNetChange >= 0 ? '+' : ''}${formatLarge(yoyNetChange)}`, yearAgoShares ? `cover-page observations vs. ${yearAgoShares.asOfDate}` : 'a comparable observation is unavailable']
   ];
   return (
     <div className="cash-flow-analysis-panel capital-allocation-panel">
@@ -1312,23 +1317,41 @@ function CapitalAllocationPanel({ history }) {
         ))}
       </div>
       <p className="muted chart-caption capital-allocation-disclaimer">
-        Share-count changes reflect the net effect of repurchases, issuance, and employee equity compensation; they are not a direct buyback measure. Shares outstanding uses SEC-reported cover-page facts only and is adjusted to the current split basis. Missing reports remain gaps.
+        Repurchase cash and common shares outstanding are different measures. Repurchase cash is USD capital allocation, while common shares outstanding is a SEC cover-page observation (not public float) adjusted to today&apos;s split basis. The share-count bridge uses separately dated shareholder-equity statements; it never infers unreported issuance.
       </p>
       <article className="fundamental-panel">
-        <h3>Share Repurchases</h3>
-        <MobileLandscapeChart title="Share Repurchases">
+        <h3>Share Repurchase Cash</h3>
+        <MobileLandscapeChart title="Share Repurchase Cash">
           <SingleSeriesChart chart={repurchaseChart} valueFormatter={formatLarge} barClass="capital-allocation-bar" />
         </MobileLandscapeChart>
       </article>
       <article className="fundamental-panel">
-        <h3>Shares Outstanding</h3>
-        <MobileLandscapeChart title="Shares Outstanding">
+        <h3>Common Shares Outstanding</h3>
+        <MobileLandscapeChart title="Common Shares Outstanding">
           <SharesOutstandingChart chart={sharesChart} />
         </MobileLandscapeChart>
       </article>
+      <article className="fundamental-panel">
+        <h3>Net Change in Common Shares</h3>
+        <p className="muted">Statement-period bridge only. It is not directly comparable to cover-page report dates.</p>
+        <MobileLandscapeChart title="Net Change in Common Shares">
+          <SingleSeriesChart chart={netShareChangeChart} valueFormatter={formatLarge} barClass="capital-allocation-bar" />
+        </MobileLandscapeChart>
+      </article>
+      <article className="fundamental-panel">
+        <h3>Share-count bridge</h3>
+        {!bridges.length ? <p className="muted">INCOMPLETE — no filing-level SEC share-count evidence has been rebuilt for this range. No issuance is inferred.</p> : <div className="table-wrap"><table className="capital-allocation-table">
+          <thead><tr><th>Statement period</th><th>Beginning</th><th>Treasury stock</th><th>Stock compensation</th><th>Business / other</th><th>Residual</th><th>Ending</th><th>Coverage</th><th>SEC accession</th></tr></thead>
+          <tbody>{bridges.map((bridge) => {
+            const amount = (type) => bridge.components?.filter((item) => item.componentType === type).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+            const other = (amount('BUSINESS_COMBINATIONS') || 0) + (amount('OTHER_EQUITY_ACTIVITY') || 0);
+            return <tr key={`${bridge.periodEnd}-${bridge.accessionNumber}`}><td>{bridge.periodStart} – {bridge.periodEnd}</td><td>{formatLarge(bridge.beginningShares)}</td><td>{formatLarge(amount('TREASURY_STOCK_PURCHASES'))}</td><td>{formatLarge(amount('STOCK_BASED_COMPENSATION'))}</td><td>{formatLarge(other)}</td><td>{formatLarge(bridge.residual)}</td><td>{formatLarge(bridge.endingShares)}</td><td>{bridge.coverageStatus}</td><td title={(bridge.components || []).flatMap((item) => item.concepts || []).join(', ')}>{bridge.accessionNumber || '--'}</td></tr>;
+          })}</tbody>
+        </table></div>}
+      </article>
       <div className="table-wrap history-table-wrap desktop-only-table capital-allocation-table">
         <table>
-          <thead><tr><th>Quarter / report date</th><th>Repurchase cash</th><th>TTM repurchases</th><th>Shares report date</th><th>Split-adjusted shares</th><th>Source</th></tr></thead>
+          <thead><tr><th>Quarter / report date</th><th>Repurchase cash (USD)</th><th>TTM repurchase cash (USD)</th><th>Shares report date</th><th>Split-adjusted common shares</th><th>Source</th></tr></thead>
           <tbody>
             {tableRows.map((row) => (
               <tr key={row.date}>

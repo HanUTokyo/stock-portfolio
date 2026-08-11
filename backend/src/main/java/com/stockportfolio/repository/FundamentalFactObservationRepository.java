@@ -11,6 +11,8 @@ public interface FundamentalFactObservationRepository extends JpaRepository<Fund
             String symbol, String fieldName, LocalDate sourceDate);
     List<FundamentalFactObservation> findBySymbolAndFieldNameAndPeriodEndBetweenOrderByPeriodEndAscSourceDateDesc(
             String symbol, String fieldName, LocalDate from, LocalDate to);
+    List<FundamentalFactObservation> findBySymbolAndFieldNameStartingWithAndPeriodEndBetweenOrderByPeriodEndAscSourceDateDesc(
+            String symbol, String fieldNamePrefix, LocalDate from, LocalDate to);
     boolean existsBySymbolAndPeriodEndAndFieldNameAndSourceDateAndAccessionNumberAndUnit(
             String symbol, LocalDate periodEnd, String fieldName, LocalDate sourceDate,
             String accessionNumber, String unit);

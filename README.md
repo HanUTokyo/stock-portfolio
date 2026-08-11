@@ -9,7 +9,8 @@ This release publishes the Web client and backend only. The backend keeps its ad
 - Portfolio holdings, allocation, performance, transactions, dividends, and cash adjustments
 - CSV import/export and structured portfolio JSON export (`v1` and `v2`)
 - Price, P/E, quarterly fundamentals, cash flow, margin, ROE/ROIC, and capital-allocation history
-- Server-authoritative DCF, Reverse DCF, sensitivity, Bear/Base/Bull, and real CAPE analysis
+- Server-authoritative dual-track FCFF/FCFE DCF, per-method Reverse DCF and sensitivity,
+  Bear/Base/Bull reconciliation, explicit operating forecasts, and real CAPE analysis
 - Position classification metadata and stock, fundamental, valuation, and portfolio notes
 - Data Review queues, corrections, batch decisions, audit history, and rollback
 - Optional bearer-token API protection, configurable CORS, OpenAPI, and Swagger UI
@@ -75,7 +76,7 @@ SPRING_JPA_HIBERNATE_DDL_AUTO=validate
 | `FUNDAMENTALS_BACKFILL_MISSING_ENABLED` | `true` | Enables scheduled fundamentals gap fill |
 | `FUNDAMENTALS_BACKFILL_MISSING_YEARS` | `15` | Fundamentals history window |
 | `FRED_CPI_CSV_URL` | keyless FRED CPI CSV | CPI source for real CAPE |
-| `VALUATION_ENGINE_VERSION` | `valuation-java-2.0.0` | Valuation result provenance |
+| `VALUATION_ENGINE_VERSION` | `valuation-java-2.1.0` | Valuation result provenance |
 | `VALUATION_EQUITY_RISK_PREMIUM` | `5.0` | Default equity risk premium (%) |
 
 Never expose `APP_API_TOKEN` through a `VITE_*` variable: Vite embeds such values in the browser bundle. When bearer protection is enabled for a hosted Web deployment, use a secure same-origin gateway or another server-side authentication layer.
@@ -88,6 +89,8 @@ All beta1 endpoints remain available. Beta2 adds API groups without removing the
 - `/api/transactions`, `/api/dividends`, and `/api/cash-adjustments`
 - `/api/portfolio` summaries, history, market assumptions, and JSON exports
 - `/api/valuations` and `/api/valuation-notes`
+- `POST /api/valuations/{symbol}/explicit-forecast` for the 10-year shared operating forecast and independent debt policy
+- `POST /api/portfolio/history/fundamentals/rebuild-sec-debt-fields?dryRun=true` for audited SEC debt-field rebuilds
 - `/api/stock-notes`, `/api/fundamental-notes`, and `/api/overview-notes`
 - `/api/admin/data-review`
 - `/api/sync` for additive backend synchronization support

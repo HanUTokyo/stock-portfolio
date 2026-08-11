@@ -4,6 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockportfolio.model.FundamentalFactObservation;
 import com.stockportfolio.repository.FundamentalFactObservationRepository;
+import com.stockportfolio.repository.SecDebtEvidenceRepository;
+import com.stockportfolio.model.SecDebtEvidence;
+import com.stockportfolio.repository.SecShareCountEvidenceRepository;
+import com.stockportfolio.repository.StockSplitRepository;
+import com.stockportfolio.model.SecShareCountEvidence;
+import com.stockportfolio.model.StockSplit;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -15,6 +21,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.LocalDate;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,9 +29,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 @Service
 public class SecCompanyFactsService {
@@ -37,18 +47,31 @@ public class SecCompanyFactsService {
 
     private volatile Map<String, String> cikByTicker;
     private FundamentalFactObservationRepository factObservationRepository;
+    private SecFilingXbrlGraphService filingXbrlGraphService;
+    private SecDebtEvidenceRepository debtEvidenceRepository;
+    private SecShareCountEvidenceRepository shareCountEvidenceRepository;
+    private StockSplitRepository stockSplitRepository;
 
     public SecCompanyFactsService(ObjectMapper objectMapper,
                                   @Value("${app.sec.user-agent:stock-portfolio kaihan@example.com}") String userAgent) {
         this.objectMapper = objectMapper;
         this.userAgent = userAgent;
-        this.httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
     }
 
     @Autowired(required = false)
     void setFactObservationRepository(FundamentalFactObservationRepository repository) {
         this.factObservationRepository = repository;
     }
+
+    @Autowired(required = false)
+    void setFilingXbrlGraphService(SecFilingXbrlGraphService service) { this.filingXbrlGraphService = service; }
+    @Autowired(required = false) void setDebtEvidenceRepository(SecDebtEvidenceRepository repository) { this.debtEvidenceRepository = repository; }
+    @Autowired(required = false) void setShareCountEvidenceRepository(SecShareCountEvidenceRepository repository) { this.shareCountEvidenceRepository = repository; }
+    @Autowired(required = false) void setStockSplitRepository(StockSplitRepository repository) { this.stockSplitRepository = repository; }
 
     public List<YahooFinancePriceService.QuarterlyFundamentalPoint> fetchQuarterlyFundamentalsHistory(
             String symbol,
@@ -68,6 +91,7 @@ public class SecCompanyFactsService {
 
         persistDilutedEpsVintages(symbol, usGaap, from, to);
         persistSharesOutstandingObservations(symbol, root.path("facts").path("dei"), from, to);
+        persistCashFlowStatementGraphs(symbol, cikOpt.get(), usGaap, from, to);
 
         Map<LocalDate, SecQuarter> byDate = new LinkedHashMap<>();
         addStandaloneDurationMetric(byDate, usGaap, from, to, "USD/shares", SecQuarter::getBasicEps, SecQuarter::setBasicEps,
@@ -96,6 +120,11 @@ public class SecCompanyFactsService {
                 "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations");
         addFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getInterestExpense, SecQuarter::setInterestExpense,
                 "InterestExpense", "InterestExpenseNonOperating", "InterestAndDebtExpense");
+        // Fallback for indicative WACC only: cash interest is not accrued interest and must
+        // never be presented as a verified economic-FCFF unlevering adjustment. It is used
+        // only when no income-statement interest expense is available.
+        addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getInterestExpense, SecQuarter::setInterestExpense,
+                "InterestPaidNet", "InterestPaid");
         addFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getTaxProvision, SecQuarter::setTaxProvision,
                 "IncomeTaxExpenseBenefit");
         addFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getPretaxIncome, SecQuarter::setPretaxIncome,
@@ -113,23 +142,13 @@ public class SecCompanyFactsService {
                 "MarketableSecuritiesNoncurrent");
         addFirstMetric(byDate, usGaap, from, to, true, "USD", SecQuarter::getInvestedCapital, SecQuarter::setInvestedCapital,
                 "InvestedCapital");
-        addSummedMetric(byDate, usGaap, from, to, true, "USD", SecQuarter::getTotalDebt, SecQuarter::setTotalDebt,
-                "ShortTermBorrowings",
-                "DebtCurrent",
-                "LongTermDebtCurrent",
-                "LongTermDebtAndFinanceLeaseObligationsCurrent",
-                "LongTermDebtNoncurrent",
-                "LongTermDebtAndFinanceLeaseObligationsNoncurrent");
+        addResolvedDebtMetrics(symbol, byDate, usGaap, from, to);
         addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getCapex, SecQuarter::setCapex,
                 "PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets");
         addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getDepreciationAmortization, SecQuarter::setDepreciationAmortization,
                 "DepreciationDepletionAndAmortization", "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment");
         addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getChangeInWorkingCapital, SecQuarter::setChangeInWorkingCapital,
                 "IncreaseDecreaseInOperatingCapital");
-        addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getDebtIssuance, SecQuarter::setDebtIssuance,
-                "ProceedsFromIssuanceOfLongTermDebt", "ProceedsFromIssuanceOfDebt");
-        addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getDebtRepayment, SecQuarter::setDebtRepayment,
-                "RepaymentsOfLongTermDebt", "RepaymentsOfDebt");
         addCashFlowMetric(byDate, usGaap, from, to, "USD", SecQuarter::getShareRepurchases, SecQuarter::setShareRepurchases,
                 "PaymentsForRepurchaseOfCommonStock", "PaymentsForRepurchaseOfEquity", "PaymentsForRepurchaseOfStock");
         addFirstMetric(byDate, usGaap, from, to, true, "USD", SecQuarter::getTotalAssets, SecQuarter::setTotalAssets,
@@ -142,6 +161,135 @@ public class SecCompanyFactsService {
                 .sorted(java.util.Comparator.comparing(YahooFinancePriceService.QuarterlyFundamentalPoint::asOfDate))
                 .toList();
     }
+
+    /** Re-ingests filing-scoped XBRL evidence without changing earnings-history values. */
+    public void rebuildFilingCashFlowGraph(String symbol, LocalDate from, LocalDate to) throws IOException, InterruptedException {
+        rebuildFilingCashFlowGraph(symbol, from, to, ignored -> { });
+    }
+
+    /**
+     * Re-ingests only filing-scoped cash-flow evidence and reports bounded filing progress.
+     * It deliberately avoids the wider Company Facts import so an on-demand graph rebuild
+     * cannot change earnings history or reviewed data.
+     */
+    public void rebuildFilingCashFlowGraph(String symbol, LocalDate from, LocalDate to,
+                                           Consumer<FilingGraphRebuildProgress> progress) throws IOException, InterruptedException {
+        Optional<String> cik = resolveCik(symbol);
+        if (cik.isEmpty()) return;
+        JsonNode root = readJson("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik.get() + ".json");
+        JsonNode usGaap = root.path("facts").path("us-gaap");
+        if (usGaap.isMissingNode() || usGaap.isNull()) return;
+        persistCashFlowStatementGraphs(symbol, cik.get(), usGaap, from, to, progress == null ? ignored -> { } : progress);
+    }
+
+    /** Rebuilds only filing-scoped SEC share-count evidence; never touches reviewed overlays or earnings history. */
+    public void rebuildShareCountBridge(String symbol, LocalDate from, LocalDate to) throws IOException, InterruptedException {
+        if (shareCountEvidenceRepository == null || filingXbrlGraphService == null) return;
+        Optional<String> cik = resolveCik(symbol); if (cik.isEmpty()) return;
+        JsonNode root = readJson("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik.get() + ".json");
+        JsonNode values = root.path("facts").path("dei").path("EntityCommonStockSharesOutstanding").path("units").path("shares");
+        Map<String, FilingMeta> filings = new LinkedHashMap<>();
+        if (values.isArray()) for (JsonNode item : values) {
+            String accession = item.path("accn").asText(""), filedRaw = item.path("filed").asText(""), form = item.path("form").asText("");
+            try {
+                LocalDate end = LocalDate.parse(item.path("end").asText("")), filed = LocalDate.parse(filedRaw);
+                if (!accession.isBlank() && isQuarterlyOrAnnualForm(form) && !end.isBefore(from) && !end.isAfter(to))
+                    filings.putIfAbsent(accession, new FilingMeta(filed, form));
+            } catch (RuntimeException ignored) { }
+        }
+        List<SecShareCountEvidence> rebuilt = new ArrayList<>();
+        List<StockSplit> splits = stockSplitRepository == null ? List.of() : stockSplitRepository.findBySymbolAndSplitDateBetweenOrderBySplitDateAsc(symbol, from, LocalDate.now());
+        for (Map.Entry<String, FilingMeta> filing : filings.entrySet()) {
+            SecFilingXbrlGraphService.FilingGraph graph = filingXbrlGraphService.load(cik.get(), filing.getKey());
+            if ("AVAILABLE".equals(graph.status())) rebuilt.addAll(shareBridgeEvidence(symbol, graph, filing.getValue(), splits, from, to));
+            Thread.sleep(110L); // SEC-friendly on-demand historical rebuild pacing
+        }
+        rebuilt = canonicalShareEvidence(rebuilt);
+        shareCountEvidenceRepository.deleteBySymbolAndPeriodEndBetween(symbol, from, to);
+        shareCountEvidenceRepository.flush();
+        if (!rebuilt.isEmpty()) shareCountEvidenceRepository.saveAll(rebuilt);
+    }
+
+    /** Comparative columns recur in later filings; retain the original filing deterministically for each statement span. */
+    private List<SecShareCountEvidence> canonicalShareEvidence(List<SecShareCountEvidence> evidence) {
+        Map<String, List<SecShareCountEvidence>> byFilingSpan = evidence.stream().collect(java.util.stream.Collectors.groupingBy(
+                row -> row.getPeriodStart() + "|" + row.getPeriodEnd() + "|" + row.getAccessionNumber(), LinkedHashMap::new, java.util.stream.Collectors.toList()));
+        Map<String, List<SecShareCountEvidence>> selected = new LinkedHashMap<>();
+        for (List<SecShareCountEvidence> candidate : byFilingSpan.values()) {
+            SecShareCountEvidence first = candidate.getFirst();
+            String span = first.getPeriodStart() + "|" + first.getPeriodEnd();
+            List<SecShareCountEvidence> existing = selected.get(span);
+            if (existing == null || compareFiling(candidate.getFirst(), existing.getFirst()) < 0) selected.put(span, candidate);
+        }
+        return selected.values().stream().flatMap(List::stream).toList();
+    }
+
+    private int compareFiling(SecShareCountEvidence left, SecShareCountEvidence right) {
+        int filed = java.util.Comparator.nullsLast(LocalDate::compareTo).compare(left.getFiledDate(), right.getFiledDate());
+        return filed != 0 ? filed : java.util.Comparator.nullsLast(String::compareTo).compare(left.getAccessionNumber(), right.getAccessionNumber());
+    }
+
+    private List<SecShareCountEvidence> shareBridgeEvidence(String symbol, SecFilingXbrlGraphService.FilingGraph graph,
+                                                              FilingMeta filing, List<StockSplit> splits, LocalDate from, LocalDate to) {
+        Map<ShareSpan, List<SecFilingXbrlGraphService.EquityFact>> bySpan = new LinkedHashMap<>();
+        for (SecFilingXbrlGraphService.EquityFact fact : graph.nonOverlappingEquityLeafFacts()) {
+            if (fact.start() != null && !"COMMON_SHARES_OUTSTANDING".equals(fact.bucket()))
+                bySpan.computeIfAbsent(new ShareSpan(fact.start(), fact.end()), ignored -> new ArrayList<>()).add(fact);
+        }
+        Map<LocalDate, ShareSpan> preferred = new LinkedHashMap<>();
+        for (ShareSpan span : bySpan.keySet()) preferred.merge(span.end(), span, (a, b) -> a.start().isBefore(b.start()) ? a : b);
+        List<SecShareCountEvidence> result = new ArrayList<>();
+        for (ShareSpan span : preferred.values()) {
+            if (span.end().isBefore(from) || span.end().isAfter(to)) continue;
+            List<SecFilingXbrlGraphService.EquityFact> components = bySpan.get(span);
+            SecFilingXbrlGraphService.EquityFact beginning = outstandingAt(graph, span.start());
+            // XBRL duration starts are exclusive for a balance carried from the prior day.
+            if (beginning == null) beginning = outstandingAt(graph, span.start().minusDays(1));
+            SecFilingXbrlGraphService.EquityFact ending = outstandingAt(graph, span.end());
+            BigDecimal factor = splitFactor(span.end(), splits);
+            BigDecimal begin = adjusted(beginning, factor), end = adjusted(ending, factor);
+            Map<String, List<SecFilingXbrlGraphService.EquityFact>> byBucket = components.stream().collect(java.util.stream.Collectors.groupingBy(
+                    SecFilingXbrlGraphService.EquityFact::bucket, LinkedHashMap::new, java.util.stream.Collectors.toList()));
+            BigDecimal componentSum = byBucket.values().stream()
+                    .map(facts -> facts.stream().map(this::signed).reduce(BigDecimal.ZERO, BigDecimal::add).multiply(factor))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal net = begin == null || end == null ? null : end.subtract(begin);
+            BigDecimal residual = net == null ? null : net.subtract(componentSum);
+            String coverage = begin != null && end != null && residual != null && residual.abs().compareTo(BigDecimal.valueOf(1_000)) <= 0 ? "COMPLETE" : "INCOMPLETE";
+            String alignment = "STATEMENT_PERIOD_NOT_DIRECTLY_COMPARABLE_TO_COVER_PAGE";
+            if (beginning != null) result.add(shareEvidence(symbol, span, "BEGINNING_SHARES", begin, coverage, beginning, filing, factor, alignment));
+            if (ending != null) result.add(shareEvidence(symbol, span, "ENDING_SHARES", end, coverage, ending, filing, factor, alignment));
+            for (Map.Entry<String, List<SecFilingXbrlGraphService.EquityFact>> entry : byBucket.entrySet()) {
+                List<SecFilingXbrlGraphService.EquityFact> facts = entry.getValue();
+                SecFilingXbrlGraphService.EquityFact representative = facts.getFirst();
+                BigDecimal amount = facts.stream().map(this::signed).reduce(BigDecimal.ZERO, BigDecimal::add).multiply(factor);
+                result.add(shareEvidence(symbol, span, entry.getKey(), amount, coverage, representative, filing, factor, alignment));
+            }
+            result.add(shareEvidence(symbol, span, "RESIDUAL", residual, coverage, ending != null ? ending : beginning, filing, factor, alignment));
+        }
+        return result;
+    }
+
+    private SecFilingXbrlGraphService.EquityFact outstandingAt(SecFilingXbrlGraphService.FilingGraph graph, LocalDate date) {
+        return graph.nonOverlappingEquityLeafFacts().stream().filter(f -> "COMMON_SHARES_OUTSTANDING".equals(f.bucket()) && date.equals(f.end()))
+                .sorted(java.util.Comparator.comparing(SecFilingXbrlGraphService.EquityFact::concept)).findFirst().orElse(null);
+    }
+    private BigDecimal signed(SecFilingXbrlGraphService.EquityFact fact) {
+        BigDecimal value = new BigDecimal(fact.value()); return "TREASURY_STOCK_PURCHASES".equals(fact.bucket()) ? value.negate() : value;
+    }
+    private BigDecimal adjusted(SecFilingXbrlGraphService.EquityFact fact, BigDecimal factor) { return fact == null ? null : new BigDecimal(fact.value()).multiply(factor); }
+    private BigDecimal splitFactor(LocalDate date, List<StockSplit> splits) {
+        BigDecimal result = BigDecimal.ONE; for (StockSplit split : splits) if (split.getSplitDate().isAfter(date) && split.getDenominator().signum() > 0)
+            result = result.multiply(split.getNumerator()).divide(split.getDenominator(), 12, java.math.RoundingMode.HALF_UP); return result;
+    }
+    private SecShareCountEvidence shareEvidence(String symbol, ShareSpan span, String type, BigDecimal amount, String coverage,
+                                                 SecFilingXbrlGraphService.EquityFact fact, FilingMeta filing, BigDecimal factor, String alignment) {
+        SecShareCountEvidence row = new SecShareCountEvidence(); row.setSymbol(symbol); row.setPeriodStart(span.start()); row.setPeriodEnd(span.end()); row.setComponentType(type); row.setAmount(amount);
+        row.setCoverageStatus(coverage); row.setStatementRole(fact == null ? null : fact.statementRole()); row.setSourceConcepts(fact == null ? null : fact.concept()); row.setAccessionNumber(fact == null ? null : fact.accession());
+        row.setForm(filing.form()); row.setFiledDate(filing.filed()); row.setSplitAdjustmentFactor(factor); row.setAlignmentStatus(alignment); return row;
+    }
+    private record ShareSpan(LocalDate start, LocalDate end) { }
+    private record FilingMeta(LocalDate filed, String form) { }
 
     private Optional<String> resolveCik(String symbol) throws IOException, InterruptedException {
         if (symbol == null || symbol.isBlank()) {
@@ -223,6 +371,68 @@ public class SecCompanyFactsService {
         }
     }
 
+    /**
+     * Store filing-scoped, presentation-selected cash-flow leaves separately
+     * from ordinary Company Facts. These observations are evidence for the
+     * FCFF bridge and are never merged into a generic ΔNWC field.
+     */
+    private void persistCashFlowStatementGraphs(String symbol, String cik, JsonNode usGaap, LocalDate from, LocalDate to) {
+        persistCashFlowStatementGraphs(symbol, cik, usGaap, from, to, ignored -> { });
+    }
+
+    private void persistCashFlowStatementGraphs(String symbol, String cik, JsonNode usGaap, LocalDate from, LocalDate to,
+                                                Consumer<FilingGraphRebuildProgress> progress) {
+        if (factObservationRepository == null || filingXbrlGraphService == null) return;
+        JsonNode values = usGaap.path("NetCashProvidedByUsedInOperatingActivities").path("units").path("USD");
+        if (!values.isArray()) return;
+        Map<String, LocalDate> filings = new LinkedHashMap<>();
+        for (JsonNode item : values) {
+            String accn = item.path("accn").asText(""); String filedRaw = item.path("filed").asText(""); String form = item.path("form").asText("");
+            if (accn.isBlank() || !isQuarterlyOrAnnualForm(form)) continue;
+            try { LocalDate filed = LocalDate.parse(filedRaw); if (!filed.isBefore(from) && !filed.isAfter(to)) filings.putIfAbsent(accn, filed); }
+            catch (RuntimeException ignored) { }
+        }
+        // Bound the sync cost; older filings are ingested on their historical sync runs.
+        List<Map.Entry<String, LocalDate>> latest = filings.entrySet().stream()
+                .sorted(Map.Entry.<String, LocalDate>comparingByValue().reversed()).limit(12).toList();
+        progress.accept(new FilingGraphRebuildProgress(latest.size(), 0, null, "STARTED", null));
+        int completed = 0;
+        for (Map.Entry<String, LocalDate> filing : latest) {
+            SecFilingXbrlGraphService.FilingGraph graph = filingXbrlGraphService.load(cik, filing.getKey());
+            if ("AVAILABLE".equals(graph.status())) {
+                for (SecFilingXbrlGraphService.Fact fact : graph.nonOverlappingLeafFacts()) {
+                    if (fact.end().isBefore(from) || fact.end().isAfter(to) || fact.unit() == null || !fact.unit().toUpperCase().contains("USD")) continue;
+                    String field = filingLeafFieldName(fact.concept());
+                    if (factObservationRepository.existsBySymbolAndPeriodEndAndFieldNameAndSourceDateAndAccessionNumberAndUnit(
+                            symbol, fact.end(), field, filing.getValue(), filing.getKey(), fact.unit())) continue;
+                    try {
+                        FundamentalFactObservation observation = new FundamentalFactObservation();
+                        observation.setSymbol(symbol.trim().toUpperCase()); observation.setPeriodEnd(fact.end()); observation.setFieldName(field);
+                        observation.setPeriodStart(fact.start()); observation.setXbrlBucket(fact.bucket()); observation.setCalculationWeight(fact.calculationWeight());
+                        observation.setValue(new BigDecimal(fact.value())); observation.setUnit(fact.unit()); observation.setCurrencyCode("USD");
+                        observation.setSourceCode("SEC_FILING_XBRL"); observation.setSourceDate(filing.getValue()); observation.setAccessionNumber(filing.getKey()); observation.setForm("XBRL");
+                        factObservationRepository.save(observation);
+                    } catch (RuntimeException ignored) { /* malformed fact cannot make a filing bridge complete */ }
+                }
+            }
+            completed++;
+            String message = "AVAILABLE".equals(graph.status()) ? null : String.join("; ", graph.warnings());
+            progress.accept(new FilingGraphRebuildProgress(latest.size(), completed, filing.getKey(), graph.status(), message));
+        }
+    }
+
+    public record FilingGraphRebuildProgress(int totalFilings, int completedFilings, String accessionNumber,
+                                             String filingStatus, String message) { }
+
+    private String filingLeafFieldName(String concept) {
+        String prefix = "xbrlCashFlowLeaf.";
+        if (concept == null) return prefix + "unknown";
+        if (prefix.length() + concept.length() <= 80) return prefix + concept;
+        // The raw SEC concept remains in the bridge ledger. This key only needs
+        // deterministic lookup semantics within a bounded legacy column.
+        return prefix + concept.substring(0, 42) + "_" + Integer.toUnsignedString(concept.hashCode(), 36);
+    }
+
     private boolean isQuarterlyOrAnnualForm(String form) {
         return "10-Q".equals(form) || "10-K".equals(form) || "10-K/A".equals(form) || "10-Q/A".equals(form);
     }
@@ -261,23 +471,51 @@ public class SecCompanyFactsService {
         }
     }
 
-    private void addSummedMetric(Map<LocalDate, SecQuarter> byDate,
-                                 JsonNode usGaap,
-                                 LocalDate from,
-                                 LocalDate to,
-                                 boolean instant,
-                                 String unit,
-                                 Function<SecQuarter, BigDecimal> getter,
-                                 BiConsumer<SecQuarter, BigDecimal> setter,
-                                 String... concepts) {
-        for (String concept : concepts) {
-            for (MetricPoint point : readConcept(usGaap, concept, unit, instant, from, to)) {
-                SecQuarter quarter = byDate.computeIfAbsent(point.asOfDate(), SecQuarter::new);
-                quarter.observe(point);
-                BigDecimal current = getter.apply(quarter);
-                setter.accept(quarter, current == null ? point.value() : current.add(point.value()));
-            }
+    private void addResolvedDebtMetrics(String symbol, Map<LocalDate, SecQuarter> byDate,
+                                        JsonNode usGaap,
+                                        LocalDate from,
+                                        LocalDate to) {
+        SecDebtResolver.Resolution resolution = SecDebtResolver.resolve(usGaap, from, to);
+        persistDebtEvidence(symbol, resolution);
+        for (SecDebtResolver.Metric metric : resolution.totalDebt()) {
+            if (metric.coverage() != SecDebtResolver.Coverage.COMPLETE) continue;
+            SecQuarter quarter = byDate.computeIfAbsent(metric.asOfDate(), SecQuarter::new);
+            quarter.observe(toMetricPoint(metric));
+            quarter.setTotalDebt(metric.value());
         }
+        for (SecDebtResolver.Metric metric : resolution.netBorrowing()) {
+            if (metric.coverage() != SecDebtResolver.Coverage.COMPLETE) continue;
+            SecQuarter quarter = byDate.computeIfAbsent(metric.asOfDate(), SecQuarter::new);
+            quarter.observe(toMetricPoint(metric));
+            quarter.setNetBorrowing(metric.value());
+        }
+    }
+
+    private void persistDebtEvidence(String symbol, SecDebtResolver.Resolution resolution) {
+        if (debtEvidenceRepository == null) return;
+        List<SecDebtEvidence> rows = new ArrayList<>();
+        persistEvidenceRows(rows, symbol, "BALANCE", resolution.totalDebt());
+        persistEvidenceRows(rows, symbol, "NET_BORROWING", resolution.netBorrowing());
+        if (rows.isEmpty()) return;
+        LocalDate from = rows.stream().map(SecDebtEvidence::getPeriodEnd).min(LocalDate::compareTo).orElseThrow();
+        LocalDate to = rows.stream().map(SecDebtEvidence::getPeriodEnd).max(LocalDate::compareTo).orElseThrow();
+        debtEvidenceRepository.deleteBySymbolAndPeriodEndBetween(symbol, from, to);
+        debtEvidenceRepository.flush();
+        debtEvidenceRepository.saveAll(rows);
+    }
+    private void persistEvidenceRows(List<SecDebtEvidence> rows, String symbol, String metricType, List<SecDebtResolver.Metric> metrics) {
+        for (SecDebtResolver.Metric metric : metrics) for (SecDebtResolver.Evidence source : metric.evidence()) {
+            SecDebtEvidence row = new SecDebtEvidence(); row.setSymbol(symbol); row.setPeriodEnd(metric.asOfDate()); row.setMetricType(metricType);
+            row.setComponentType(source.componentType()); row.setAmount(source.amount()); row.setCoverageStatus(metric.coverage().name()); row.setSelectedRoute(metric.route().name());
+            row.setSourceConcepts(String.join(",", source.concepts())); row.setAccessionNumbers(source.accessions().isBlank() ? metric.accessionNumber() : source.accessions()); row.setForm(metric.form()); row.setFiledDate(metric.filed());
+            row.setSourceStart(source.sourceStart()); row.setSourceEnd(source.sourceEnd()); row.setQuarterizationMethod(metric.quarterizationMethod()); rows.add(row);
+        }
+    }
+
+    private MetricPoint toMetricPoint(SecDebtResolver.Metric metric) {
+        return new MetricPoint(metric.asOfDate(), metric.value(),
+                metric.filed() == null ? LocalDate.MIN : metric.filed(), metric.fiscalYear(),
+                metric.fiscalPeriod(), metric.accessionNumber(), metric.form());
     }
 
     private void addStandaloneDurationMetric(Map<LocalDate, SecQuarter> byDate,
@@ -389,8 +627,12 @@ public class SecCompanyFactsService {
         }
 
         Pattern framePattern = instant ? INSTANT_QUARTER_FRAME : QUARTER_FRAME;
-        List<MetricPoint> points = new ArrayList<>();
+        Map<LocalDate, MetricPoint> firstPublishedByEndDate = new HashMap<>();
         for (JsonNode item : values) {
+            String form = item.path("form").asText("");
+            if (!isQuarterlyOrAnnualForm(form)) {
+                continue;
+            }
             String frame = item.path("frame").asText("");
             if (!framePattern.matcher(frame).matches()) {
                 continue;
@@ -404,11 +646,14 @@ public class SecCompanyFactsService {
             if (asOfDate.isBefore(from) || asOfDate.isAfter(to)) {
                 continue;
             }
-            points.add(new MetricPoint(asOfDate, valueNode.decimalValue(), parseDateOrMin(item.path("filed").asText("")),
+            MetricPoint point = new MetricPoint(asOfDate, valueNode.decimalValue(), parseDateOrMin(item.path("filed").asText("")),
                     item.path("fy").isInt() ? item.path("fy").asInt() : null,
-                    item.path("fp").asText(null), item.path("accn").asText(null), item.path("form").asText(null)));
+                    item.path("fp").asText(null), item.path("accn").asText(null), form);
+            firstPublishedByEndDate.merge(asOfDate, point, this::preferredMetricPoint);
         }
-        return points;
+        return firstPublishedByEndDate.values().stream()
+                .sorted(java.util.Comparator.comparing(MetricPoint::asOfDate))
+                .toList();
     }
 
     private List<MetricPoint> readStandaloneDurationConcept(JsonNode usGaap,
@@ -432,7 +677,7 @@ public class SecCompanyFactsService {
         Map<LocalDate, ReportedFlowPoint> firstPublishedByEndDate = new HashMap<>();
         for (JsonNode item : values) {
             String form = item.path("form").asText("");
-            if (!("10-Q".equals(form) || "10-K".equals(form) || "10-K/A".equals(form))) {
+            if (!isQuarterlyOrAnnualForm(form)) {
                 continue;
             }
             JsonNode valueNode = item.path("val");
@@ -451,10 +696,7 @@ public class SecCompanyFactsService {
             ReportedFlowPoint point = new ReportedFlowPoint(startDate, endDate, valueNode.decimalValue(), filed,
                     item.path("fy").isInt() ? item.path("fy").asInt() : null,
                     item.path("fp").asText(null), item.path("accn").asText(null), form);
-            ReportedFlowPoint existing = firstPublishedByEndDate.get(endDate);
-            if (existing == null || point.filed().isBefore(existing.filed())) {
-                firstPublishedByEndDate.put(endDate, point);
-            }
+            firstPublishedByEndDate.merge(endDate, point, this::preferredReportedFlowPoint);
         }
 
         return firstPublishedByEndDate.values().stream()
@@ -494,7 +736,7 @@ public class SecCompanyFactsService {
                 continue;
             }
             String form = item.path("form").asText("");
-            if (!("10-Q".equals(form) || "10-K".equals(form))) {
+            if (!isQuarterlyOrAnnualForm(form)) {
                 continue;
             }
             JsonNode valueNode = item.path("val");
@@ -513,34 +755,39 @@ public class SecCompanyFactsService {
                     item.path("fy").isInt() ? item.path("fy").asInt() : null, fp,
                     item.path("accn").asText(null), form);
             Map<String, ReportedFlowPoint> byPeriod = byFiscalYearStart.computeIfAbsent(startDate, ignored -> new HashMap<>());
-            ReportedFlowPoint existing = byPeriod.get(fp);
-            if (existing == null || point.filed().isBefore(existing.filed())) {
-                byPeriod.put(fp, point);
-            }
+            byPeriod.merge(fp, point, this::preferredReportedFlowPoint);
         }
 
         List<MetricPoint> points = new ArrayList<>();
         for (Map<String, ReportedFlowPoint> byPeriod : byFiscalYearStart.values()) {
             BigDecimal previousYtd = null;
+            String previousPeriod = null;
             for (String fp : List.of("Q1", "Q2", "Q3", "FY")) {
                 ReportedFlowPoint current = byPeriod.get(fp);
                 if (current == null) {
                     continue;
                 }
-                BigDecimal quarterValue = previousYtd == null ? ("Q1".equals(fp) ? current.value() : null) : current.value().subtract(previousYtd);
-                if (quarterValue == null && "Q2".equals(fp)) {
+                BigDecimal quarterValue = "Q1".equals(fp)
+                        ? current.value()
+                        : isImmediateFiscalPredecessor(previousPeriod, fp) && previousYtd != null
+                        ? current.value().subtract(previousYtd)
+                        : null;
+                if (quarterValue == null) {
                     ReportedFlowPoint standalone = standaloneByEndDate.get(current.endDate());
                     if (standalone != null && standalone.startDate().isAfter(current.startDate())) {
-                        BigDecimal inferredQ1 = current.value().subtract(standalone.value());
-                        LocalDate inferredQ1End = standalone.startDate().minusDays(1);
-                        if (!inferredQ1End.isBefore(from) && !inferredQ1End.isAfter(to)) {
-                            points.add(new MetricPoint(inferredQ1End, inferredQ1, current.filed(), current.fiscalYear(),
-                                    "Q1", current.accessionNumber(), current.form()));
+                        if ("Q2".equals(fp)) {
+                            BigDecimal inferredQ1 = current.value().subtract(standalone.value());
+                            LocalDate inferredQ1End = standalone.startDate().minusDays(1);
+                            if (!inferredQ1End.isBefore(from) && !inferredQ1End.isAfter(to)) {
+                                points.add(new MetricPoint(inferredQ1End, inferredQ1, current.filed(), current.fiscalYear(),
+                                        "Q1", current.accessionNumber(), current.form()));
+                            }
                         }
                         quarterValue = standalone.value();
                     }
                 }
                 previousYtd = current.value();
+                previousPeriod = fp;
                 if (quarterValue == null || current.endDate().isBefore(from) || current.endDate().isAfter(to)) {
                     continue;
                 }
@@ -549,6 +796,33 @@ public class SecCompanyFactsService {
             }
         }
         return points;
+    }
+
+    private boolean isImmediateFiscalPredecessor(String previous, String current) {
+        return ("Q1".equals(previous) && "Q2".equals(current))
+                || ("Q2".equals(previous) && "Q3".equals(current))
+                || ("Q3".equals(previous) && "FY".equals(current));
+    }
+
+    private MetricPoint preferredMetricPoint(MetricPoint first, MetricPoint second) {
+        int comparison = comparePublication(first.filed(), first.accessionNumber(), second.filed(), second.accessionNumber());
+        return comparison <= 0 ? first : second;
+    }
+
+    private ReportedFlowPoint preferredReportedFlowPoint(ReportedFlowPoint first, ReportedFlowPoint second) {
+        int comparison = comparePublication(first.filed(), first.accessionNumber(), second.filed(), second.accessionNumber());
+        return comparison <= 0 ? first : second;
+    }
+
+    private int comparePublication(LocalDate firstFiled, String firstAccession,
+                                   LocalDate secondFiled, String secondAccession) {
+        LocalDate firstDate = firstFiled == null || LocalDate.MIN.equals(firstFiled) ? LocalDate.MAX : firstFiled;
+        LocalDate secondDate = secondFiled == null || LocalDate.MIN.equals(secondFiled) ? LocalDate.MAX : secondFiled;
+        int comparison = firstDate.compareTo(secondDate);
+        if (comparison != 0) return comparison;
+        String first = firstAccession == null ? "" : firstAccession;
+        String second = secondAccession == null ? "" : secondAccession;
+        return first.compareTo(second);
     }
 
     private LocalDate parseDateOrMin(String raw) {
@@ -560,6 +834,7 @@ public class SecCompanyFactsService {
 
     private JsonNode readJson(String url) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(30))
                 .header("User-Agent", userAgent)
                 .header("Accept-Encoding", "identity")
                 .GET()
@@ -606,8 +881,6 @@ public class SecCompanyFactsService {
         private BigDecimal dilutedWeightedAverageShares;
         private BigDecimal depreciationAmortization;
         private BigDecimal changeInWorkingCapital;
-        private BigDecimal debtIssuance;
-        private BigDecimal debtRepayment;
         private BigDecimal netBorrowing;
         private BigDecimal shareRepurchases;
         private BigDecimal totalAssets;
@@ -634,17 +907,16 @@ public class SecCompanyFactsService {
             if (adjustedFcf == null && cashFlow != null && capex != null) {
                 adjustedFcf = cashFlow.subtract(capex);
             }
-            if (investedCapital == null && totalDebt != null && stockholdersEquity != null) {
+            // Keep invested capital on the system's DCF bridge definition. The SEC
+            // InvestedCapital concept is issuer-specific and can represent operating
+            // capital rather than debt + equity less non-operating liquidity.
+            if (totalDebt != null && stockholdersEquity != null) {
                 investedCapital = totalDebt.add(stockholdersEquity);
                 if (cashAndEquivalents != null) {
                     investedCapital = investedCapital.subtract(cashAndEquivalents);
                 }
                 if (shortTermInvestments != null) investedCapital = investedCapital.subtract(shortTermInvestments);
                 if (noncurrentMarketableSecurities != null) investedCapital = investedCapital.subtract(noncurrentMarketableSecurities);
-            }
-            if (netBorrowing == null && (debtIssuance != null || debtRepayment != null)) {
-                netBorrowing = (debtIssuance == null ? BigDecimal.ZERO : debtIssuance)
-                        .subtract(debtRepayment == null ? BigDecimal.ZERO : debtRepayment);
             }
             return this;
         }
@@ -742,10 +1014,7 @@ public class SecCompanyFactsService {
         private void setDepreciationAmortization(BigDecimal value) { depreciationAmortization = value == null ? null : value.abs(); }
         private BigDecimal getChangeInWorkingCapital() { return changeInWorkingCapital; }
         private void setChangeInWorkingCapital(BigDecimal value) { changeInWorkingCapital = value; }
-        private BigDecimal getDebtIssuance() { return debtIssuance; }
-        private void setDebtIssuance(BigDecimal value) { debtIssuance = value == null ? null : value.abs(); }
-        private BigDecimal getDebtRepayment() { return debtRepayment; }
-        private void setDebtRepayment(BigDecimal value) { debtRepayment = value == null ? null : value.abs(); }
+        private void setNetBorrowing(BigDecimal value) { netBorrowing = value; }
         private BigDecimal getShareRepurchases() { return shareRepurchases; }
         private void setShareRepurchases(BigDecimal value) { shareRepurchases = value == null ? null : value.abs(); }
         private BigDecimal getTotalAssets() { return totalAssets; }
