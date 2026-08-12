@@ -263,16 +263,26 @@ public class ValuationService {
     }
 
     private DualTrackBundle dualTrack(Context c, List<ValuationScenarioResponse> compatibilityScenarios) {
-        List<ValuationScenarioResponse> fcffScenarios = scenariosForMethod("FCFF", c, compatibilityScenarios);
+        List<ValuationScenarioResponse> strictFcffScenarios = scenariosForMethod("FCFF", c, compatibilityScenarios);
         boolean completeNetBorrowingEvidence = hasCompleteNetBorrowingEvidence(c);
-        List<ValuationScenarioResponse> fcfeScenarios = completeNetBorrowingEvidence
+        List<ValuationScenarioResponse> strictFcfeScenarios = completeNetBorrowingEvidence
                 ? scenariosForMethod("FCFE", c, compatibilityScenarios) : List.of();
+        List<ValuationScenarioResponse> fcffScenarios = strictFcffScenarios.stream().anyMatch(ValuationScenarioResponse::valid)
+                ? strictFcffScenarios : scenariosForSelection("FCFF", c, compatibilityScenarios, referenceSelection("FCFF", c));
+        List<ValuationScenarioResponse> fcfeScenarios = strictFcfeScenarios.stream().anyMatch(ValuationScenarioResponse::valid)
+                ? strictFcfeScenarios : scenariosForSelection("FCFE", c, compatibilityScenarios, referenceSelection("FCFE", c));
         ValuationMethodResponse fcff = methodResponse("FCFF", c, fcffScenarios, true);
         ValuationMethodResponse fcfe = methodResponse("FCFE", c, fcfeScenarios, completeNetBorrowingEvidence);
         ValuationMethodsResponse methods = new ValuationMethodsResponse(fcff, fcfe);
         CrossModelReconciliationResponse reconciliation = reconcile(c.selection().model(),
-                "INCOMPLETE".equals(c.cashFlowBridge().coverageStatus()) ? List.of() : fcffScenarios, fcfeScenarios,
+                "INCOMPLETE".equals(c.cashFlowBridge().coverageStatus()) ? List.of() : strictFcffScenarios,
+                completeNetBorrowingEvidence ? strictFcfeScenarios : List.of(),
                 fcff.definitionCrossCheckDifferencePct());
+        if (fcff.availability().equals("REFERENCE") || fcfe.availability().equals("REFERENCE")) {
+            List<String> warnings = new ArrayList<>(reconciliation.warnings());
+            warnings.add("REFERENCE_ONLY: one or more valuation tracks use incomplete SEC audit evidence and are excluded from formal cross-model readiness.");
+            reconciliation = new CrossModelReconciliationResponse("NOT_READY", reconciliation.comparabilityStatus(), reconciliation.baseDifferencePct(), reconciliation.scenarios(), warnings);
+        }
         String readiness = "STALE_FUNDAMENTALS".equals(c.fundamentalsFreshness().status()) ? "NOT_READY" : reconciliation.readiness();
         if (!readiness.equals(reconciliation.readiness())) {
             List<String> warnings = new ArrayList<>(reconciliation.warnings());
@@ -293,6 +303,55 @@ public class ValuationService {
             return engine.evaluateSettings(source.scenarioType(), source.origin(), settings, selection,
                     c.market(), c.growth().inputs(), source.updatedAt());
         }).toList();
+    }
+
+    private List<ValuationScenarioResponse> scenariosForSelection(String method, Context c,
+                                                                    List<ValuationScenarioResponse> source,
+                                                                    ValuationEngine.Selection selection) {
+        if (selection == null || !selection.available()) return List.of();
+        return source.stream().map(scenario -> {
+            ValuationAssumptions settings = scenario.assumptions() == null ? engine.defaultSettings(scenario.scenarioType()) : scenario.assumptions();
+            if ("FCFF".equals(method)) settings = applyExternalFcffWacc(settings);
+            return engine.evaluateSettings(scenario.scenarioType(), "REFERENCE", settings, selection,
+                    c.market(), c.growth().inputs(), scenario.updatedAt());
+        }).toList();
+    }
+
+    /** Builds an explicitly unverified, view-only valuation selection from reported cash flows. */
+    private ValuationEngine.Selection referenceSelection(String method, Context c) {
+        ValuationEngine.MethodSelection selected = c.selection().methodSelection(method);
+        if (selected == null) return null;
+        BigDecimal cashFlow = selected.latestTtmCashFlow();
+        if ("FCFF".equals(method)) {
+            BigDecimal cfo = latestFourSum(c.selection().quarters(), ValuationEngine.Quarter::cfo);
+            BigDecimal capex = latestFourSum(c.selection().quarters(), ValuationEngine.Quarter::capex);
+            BigDecimal interest = latestFourSum(c.selection().quarters(), ValuationEngine.Quarter::interestExpense);
+            if (cfo == null || capex == null) return null;
+            cashFlow = cfo.subtract(capex, ValuationEngine.MC);
+            if (interest != null && c.selection().taxRatePct() != null) {
+                BigDecimal afterTaxInterest = interest.multiply(BigDecimal.ONE.subtract(c.selection().taxRatePct()
+                        .divide(BigDecimal.valueOf(100), ValuationEngine.MC)), ValuationEngine.MC);
+                cashFlow = cashFlow.add(afterTaxInterest, ValuationEngine.MC);
+            }
+        }
+        if (cashFlow == null || cashFlow.signum() <= 0) return null;
+        BigDecimal rate = selected.automaticDiscountRatePct();
+        if ("FCFF".equals(method) && rate == null) rate = costOfEquity(c.market());
+        if (rate == null) return null;
+        BigDecimal base = cashFlow;
+        BigDecimal growth = c.growth().inputs().autoGrowthPct();
+        if (growth == null) growth = BigDecimal.ZERO;
+        return new ValuationEngine.Selection(method, cashFlow, base, growth, rate, c.selection().taxRatePct(),
+                selected.definitionCrossCheckDifferencePct(), c.selection().netDebt(), c.selection().debt(), c.selection().cash(),
+                c.selection().shortTermInvestments(), c.selection().noncurrentMarketableSecurities(), 0, List.of(), List.of(),
+                List.of("REFERENCE_ONLY: reported cash flow is displayed without complete SEC audit evidence.",
+                        "FCFF".equals(method) && selected.automaticDiscountRatePct() == null ? "WACC_FALLBACK_COST_OF_EQUITY" : ""),
+                c.selection().quarters(), c.selection().methodSelections());
+    }
+
+    private BigDecimal costOfEquity(ValuationEngine.MarketInputs market) {
+        if (market.riskFreeRatePct() == null || market.beta() == null || market.equityRiskPremiumPct() == null) return null;
+        return market.riskFreeRatePct().add(market.beta().multiply(market.equityRiskPremiumPct(), ValuationEngine.MC), ValuationEngine.MC);
     }
 
     private WaccReferencesResponse externalReferences(Context context) {
@@ -365,9 +424,11 @@ public class ValuationService {
         List<String> missing = selected == null ? List.of("methodSelection") : selected.missingInputs();
         boolean bridgeIncomplete = "FCFF".equals(method) && c.cashFlowBridge() != null
                 && !"COMPLETE".equals(c.cashFlowBridge().coverageStatus());
+        boolean financingEvidenceIncomplete = "FCFE".equals(method) && !completeFinancingEvidence;
+        boolean referenceOnly = !scenarios.isEmpty() && scenarios.stream().anyMatch(ValuationScenarioResponse::valid)
+                && (bridgeIncomplete || financingEvidenceIncomplete || scenarios.stream().anyMatch(scenario -> "REFERENCE".equals(scenario.origin())));
         boolean indicativeCashReference = "FCFF".equals(method) && bridgeIncomplete && !scenarios.isEmpty()
                 && scenarios.stream().anyMatch(ValuationScenarioResponse::valid);
-        boolean financingEvidenceIncomplete = "FCFE".equals(method) && !completeFinancingEvidence;
         if (financingEvidenceIncomplete) missing = concatStrings(missing, List.of("completeNetBorrowingEvidence"));
         boolean allValid = !bridgeIncomplete && !financingEvidenceIncomplete && selected != null && selected.available() && !scenarios.isEmpty()
                 && scenarios.stream().allMatch(ValuationScenarioResponse::valid);
@@ -377,7 +438,7 @@ public class ValuationService {
                 && selected.definitionCrossCheckDifferencePct() != null
                 && selected.definitionCrossCheckDifferencePct().compareTo(BigDecimal.TEN) > 0;
         if (bridgeIncomplete) missing = concatStrings(missing, c.cashFlowBridge().missingInputs());
-        String availability = indicativeCashReference || (bridgeIncomplete && "FCFF".equals(method) && selected != null && selected.available())
+        String availability = referenceOnly ? "REFERENCE" : indicativeCashReference || (bridgeIncomplete && "FCFF".equals(method) && selected != null && selected.available())
                 ? "INDICATIVE" : bridgeIncomplete || financingEvidenceIncomplete ? "UNAVAILABLE" : allValid ? (operatingBridgeGap ? "PARTIAL" : "AVAILABLE")
                 : someValid ? "PARTIAL" : "UNAVAILABLE";
         List<String> warnings = new ArrayList<>();
@@ -393,12 +454,13 @@ public class ValuationService {
         ValuationScenarioResponse baseScenario = scenarios.stream()
                 .filter(scenario -> "BASE".equals(scenario.scenarioType()) && scenario.valid())
                 .findFirst().orElse(null);
-        ValuationEvaluationResponse.Sensitivity sensitivity = bridgeIncomplete || financingEvidenceIncomplete || baseScenario == null ? null
-                : engine.sensitivity("BASE", baseScenario.resolvedAssumptions(), c.selection().forMethod(method), c.market());
-        ValuationEvaluationResponse.ReverseDcf reverseDcf = bridgeIncomplete || financingEvidenceIncomplete || baseScenario == null ? null
-                : engine.reverse("BASE", baseScenario.resolvedAssumptions(), c.selection().forMethod(method), c.market());
+        ValuationEngine.Selection sensitivitySelection = referenceOnly ? referenceSelection(method, c) : c.selection().forMethod(method);
+        ValuationEvaluationResponse.Sensitivity sensitivity = baseScenario == null || sensitivitySelection == null ? null
+                : engine.sensitivity("BASE", baseScenario.resolvedAssumptions(), sensitivitySelection, c.market());
+        ValuationEvaluationResponse.ReverseDcf reverseDcf = baseScenario == null || sensitivitySelection == null ? null
+                : engine.reverse("BASE", baseScenario.resolvedAssumptions(), sensitivitySelection, c.market());
         String fcff = "FCFF";
-        return new ValuationMethodResponse(method, allValid || indicativeCashReference, availability, availability,
+        return new ValuationMethodResponse(method, allValid || indicativeCashReference || referenceOnly, availability, availability,
                 fcff.equals(method) ? "EBIT × (1 - cash operating tax rate) + D&A - capex - delta operating NWC"
                         : "CFO - capex + reported total net borrowing",
                 fcff.equals(method) ? "CFO + after-tax interest - capex (cash reference only)"
@@ -673,9 +735,22 @@ public class ValuationService {
     }
 
     private List<EarningsHistory> canonicalQuarterRows(List<EarningsHistory> rows) {
+        Map<String, EarningsHistory> byFiscalPeriod = new LinkedHashMap<>();
+        for (EarningsHistory row : rows) {
+            if (row.getAsOfDate() == null || row.getFiscalYear() == null || row.getFiscalPeriod() == null || row.getFiscalPeriod().isBlank()) continue;
+            String key = row.getFiscalYear() + "|" + row.getFiscalPeriod().trim().toUpperCase(Locale.ROOT);
+            EarningsHistory current = byFiscalPeriod.get(key);
+            if (current == null || comparePublication(row, current) > 0) byFiscalPeriod.put(key, row);
+        }
         Map<LocalDate, EarningsHistory> canonical = new LinkedHashMap<>();
+        byFiscalPeriod.values().forEach(row -> canonical.put(row.getAsOfDate(), row));
         for (EarningsHistory row : rows) {
             if (row.getAsOfDate() == null) continue;
+            // Calendar-quarter fallback rows from Yahoo commonly sit 1–3 days from the
+            // SEC fiscal quarter. They are not a second quarter and must never break TTM continuity.
+            boolean overlapsReportedFiscalQuarter = byFiscalPeriod.values().stream()
+                    .anyMatch(sec -> Math.abs(ChronoUnit.DAYS.between(sec.getAsOfDate(), row.getAsOfDate())) <= 10);
+            if (overlapsReportedFiscalQuarter && (row.getFiscalYear() == null || row.getFiscalPeriod() == null || row.getFiscalPeriod().isBlank())) continue;
             EarningsHistory current = canonical.get(row.getAsOfDate());
             if (current == null || comparePublication(row, current) > 0) canonical.put(row.getAsOfDate(), row);
         }

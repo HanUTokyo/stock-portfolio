@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 @Service
 public class SecFilingGraphJobService {
     private final SecCompanyFactsService companyFacts;
+    private final SecDebtRebuildService debtRebuildService;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "sec-filing-graph-rebuild");
         thread.setDaemon(true);
@@ -32,20 +33,25 @@ public class SecFilingGraphJobService {
     });
     private final ConcurrentMap<String, MutableJob> jobs = new ConcurrentHashMap<>();
 
-    public SecFilingGraphJobService(SecCompanyFactsService companyFacts) {
+    public SecFilingGraphJobService(SecCompanyFactsService companyFacts, SecDebtRebuildService debtRebuildService) {
         this.companyFacts = companyFacts;
+        this.debtRebuildService = debtRebuildService;
     }
 
-    public JobResponse submit(String rawSymbol, int years) {
+    public JobResponse submit(String rawSymbol, int years) { return submit(rawSymbol, years, "FILING_GRAPH_REBUILD"); }
+
+    public JobResponse submitDebtEvidence(String rawSymbol, int years) { return submit(rawSymbol, years, "DEBT_EVIDENCE_REBUILD"); }
+
+    private JobResponse submit(String rawSymbol, int years, String type) {
         String symbol = rawSymbol == null ? "" : rawSymbol.trim().toUpperCase(Locale.ROOT);
         LocalDate to = LocalDate.now();
         LocalDate from = to.minusYears(years);
         Optional<MutableJob> active = jobs.values().stream()
-                .filter(job -> job.symbol.equals(symbol) && ("QUEUED".equals(job.status) || "RUNNING".equals(job.status)))
+                .filter(job -> job.symbol.equals(symbol) && job.jobType.equals(type) && ("QUEUED".equals(job.status) || "RUNNING".equals(job.status)))
                 .min(Comparator.comparing(job -> job.createdAt));
         if (active.isPresent()) return active.get().snapshot();
 
-        MutableJob job = new MutableJob(UUID.randomUUID().toString(), symbol, from, to, years);
+        MutableJob job = new MutableJob(UUID.randomUUID().toString(), symbol, from, to, years, type);
         jobs.put(job.id, job);
         executor.submit(() -> run(job));
         return job.snapshot();
@@ -60,12 +66,16 @@ public class SecFilingGraphJobService {
         job.status = "RUNNING";
         job.startedAt = Instant.now();
         try {
-            companyFacts.rebuildFilingCashFlowGraph(job.symbol, job.from, job.to, progress -> {
-                job.totalFilings = progress.totalFilings();
-                job.completedFilings = progress.completedFilings();
-                job.currentAccessionNumber = progress.accessionNumber();
-                if (progress.message() != null && !progress.message().isBlank()) job.lastMessage = progress.message();
-            });
+            if ("DEBT_EVIDENCE_REBUILD".equals(job.jobType)) {
+                job.totalFilings = 1;
+                debtRebuildService.rebuild(job.symbol, job.years, false, "ASYNC_SEC_DEBT_EVIDENCE_REBUILD");
+                job.completedFilings = 1;
+            } else companyFacts.rebuildFilingCashFlowGraph(job.symbol, job.from, job.to, progress -> {
+                    job.totalFilings = progress.totalFilings();
+                    job.completedFilings = progress.completedFilings();
+                    job.currentAccessionNumber = progress.accessionNumber();
+                    if (progress.message() != null && !progress.message().isBlank()) job.lastMessage = progress.message();
+                });
             job.status = "COMPLETED";
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -90,7 +100,7 @@ public class SecFilingGraphJobService {
         executor.shutdownNow();
     }
 
-    public record JobResponse(String jobId, String symbol, LocalDate from, LocalDate to, int years,
+    public record JobResponse(String jobId, String jobType, String symbol, LocalDate from, LocalDate to, int years,
                               String status, int totalFilings, int completedFilings,
                               String currentAccessionNumber, String lastMessage,
                               Instant createdAt, Instant startedAt, Instant finishedAt) { }
@@ -101,6 +111,7 @@ public class SecFilingGraphJobService {
         private final LocalDate from;
         private final LocalDate to;
         private final int years;
+        private final String jobType;
         private final Instant createdAt = Instant.now();
         private volatile String status = "QUEUED";
         private volatile int totalFilings;
@@ -110,12 +121,12 @@ public class SecFilingGraphJobService {
         private volatile Instant startedAt;
         private volatile Instant finishedAt;
 
-        private MutableJob(String id, String symbol, LocalDate from, LocalDate to, int years) {
-            this.id = id; this.symbol = symbol; this.from = from; this.to = to; this.years = years;
+        private MutableJob(String id, String symbol, LocalDate from, LocalDate to, int years, String jobType) {
+            this.id = id; this.symbol = symbol; this.from = from; this.to = to; this.years = years; this.jobType = jobType;
         }
 
         private JobResponse snapshot() {
-            return new JobResponse(id, symbol, from, to, years, status, totalFilings, completedFilings,
+            return new JobResponse(id, jobType, symbol, from, to, years, status, totalFilings, completedFilings,
                     currentAccessionNumber, lastMessage, createdAt, startedAt, finishedAt);
         }
     }

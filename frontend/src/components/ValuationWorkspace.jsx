@@ -44,7 +44,7 @@ function methodAvailability(method) {
   const normalizedStatus = status == null ? '' : String(status).trim().toUpperCase();
   const available = explicit ?? (!normalizedStatus
     ? Boolean(method.scenarios || method.overview)
-    : ['AVAILABLE', 'INDICATIVE', 'READY', 'READY_WITH_CAVEATS'].includes(normalizedStatus));
+    : ['AVAILABLE', 'INDICATIVE', 'REFERENCE', 'READY', 'READY_WITH_CAVEATS'].includes(normalizedStatus));
   const reasons = asList(
     nested.missingInputs ?? method.missingInputs
       ?? nested.missingReasons ?? method.missingReasons
@@ -712,6 +712,7 @@ function MethodSummaryCard({ label, method, scenarios, selected, onSelect }) {
         <span>{String(availability.status).replaceAll('_', ' ')}</span>
       </div>
       <strong>{availability.available ? `${money(range.low)} – ${money(range.high)}` : 'Not available'}</strong>
+      {availability.status === 'REFERENCE' ? <p className="warning-text">Reference only — SEC audit evidence is incomplete; this is not a verified DCF result.</p> : null}
       <p className="muted">Bear–Bull intrinsic value per share</p>
       <p className="muted">{label === 'FCFF' ? 'Enterprise cash flow for shareholders + creditors, discounted at WACC.' : 'Shareholder cash flow, discounted at Cost of Equity; WACC references do not apply.'}</p>
       {availability.reasons.length ? (

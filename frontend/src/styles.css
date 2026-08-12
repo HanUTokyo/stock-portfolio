@@ -9200,6 +9200,7 @@ body[data-theme='light'] {
 .readiness-badge { margin-left: auto; border-radius: 999px; padding: 5px 10px; font-weight: 750; }
 .readiness-ready { background: rgba(47, 179, 126, .16); color: #4dd69b; }
 .readiness-ready-with-caveats { background: rgba(240, 174, 73, .16); color: #f0ae49; }
+.readiness-reference { background: rgba(95, 156, 255, .16); color: #7aaeff; }
 .readiness-not-ready,
 .readiness-unavailable,
 .readiness-not-assessable { background: rgba(231, 92, 92, .16); color: #ef8585; }

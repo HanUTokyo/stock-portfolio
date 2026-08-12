@@ -40,6 +40,14 @@ public class SecFilingXbrlController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "SEC filing graph rebuild job not found"));
     }
 
+    @PostMapping("/rebuild-sec-debt-evidence")
+    @org.springframework.web.bind.annotation.ResponseStatus(HttpStatus.ACCEPTED)
+    public SecFilingGraphJobService.JobResponse rebuildDebtEvidence(@RequestParam String symbol,
+                                                                     @RequestParam(defaultValue = "2") int years) {
+        if (years < 1 || years > 15) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "years must be between 1 and 15");
+        return filingGraphJobs.submitDebtEvidence(symbol, years);
+    }
+
     @PostMapping("/rebuild-sec-share-count-bridge")
     public Map<String, Object> rebuildShareCountBridge(@RequestParam String symbol,
                                                         @RequestParam(defaultValue = "2") int years) {
